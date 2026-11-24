@@ -10,12 +10,6 @@ import { pool } from "../db.js";
 import { config } from "../config.js";
 
 export async function uploadRoutes(app: FastifyInstance) {
-  await app.register(multipart, {
-    limits: {
-      files: 1,
-      fileSize: config.maxFileSizeBytes
-    }
-  });
 
   app.post("/upload", async (request, reply) => {
     const file = await request.file();
