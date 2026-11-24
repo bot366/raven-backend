@@ -1,0 +1,46 @@
+node_modules/
+dist/
+.env
+storage/
+*.log
+
+
+# Environment variables and secrets
+
+.env
+
+.env.*
+
+
+# Allow the example configuration
+!.env.example
+
+
+
+# Dependencies
+
+node_modules/
+
+
+
+# Uploaded files
+
+storage/
+
+
+
+# Build output
+
+dist/
+
+
+
+# Logs
+*.log
+
+
+
+# Operating system files
+
+.DS_Store
+Thumbs.db
