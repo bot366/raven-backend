@@ -4,8 +4,12 @@ import multipart from "@fastify/multipart";
 import { config } from "./config.js";
 import { pool } from "./db.js";
 import { transferRoutes } from "./routes/transfers.js";
+import { uploadRoutes } from "./routes/uploads.js";
 
-const app = Fastify({ logger: true, bodyLimit: 1024 * 1024 });
+const app = Fastify({
+  logger: true,
+  bodyLimit: config.maxFileSizeBytes + 1024 * 1024
+});
 
 await app.register(cors, {
   origin: config.corsOrigin === "*" ? true : config.corsOrigin.split(",").map((v) => v.trim())
@@ -20,14 +24,31 @@ app.get("/health", async () => {
 });
 
 await app.register(transferRoutes);
+await app.register(uploadRoutes);
+
 
 app.setErrorHandler((error, request, reply) => {
   request.log.error(error);
-  if (error.statusCode === 413) {
-    return reply.code(413).send({ error: "Request or file is too large." });
+
+  const statusCode =
+    typeof error === "object" &&
+    error !== null &&
+    "statusCode" in error &&
+    typeof error.statusCode === "number"
+      ? error.statusCode
+      : undefined;
+
+  if (statusCode === 413) {
+    return reply.code(413).send({
+      error: "Request or file is too large."
+    });
   }
-  return reply.code(500).send({ error: "Internal server error." });
+
+  return reply.code(500).send({
+    error: "Internal server error."
+  });
 });
+
 
 const shutdown = async () => {
   await app.close();
