@@ -22,8 +22,18 @@ CREATE INDEX IF NOT EXISTS transfers_expires_at_idx ON transfers(expires_at);
 `;
 
 try {
-  await pool.query(sql);
-  console.log("RAVEN database migration completed.");
+await pool.query(sql);
+
+const result = await pool.query(`
+  SELECT
+    current_database() AS database,
+    current_user AS username,
+    current_schema() AS schema,
+    to_regclass('public.transfers') AS transfers_table
+`);
+
+console.log("Database connection details:", result.rows[0]);
+console.log("RAVEN database migration completed.");
 } catch (error) {
   console.error("Migration failed:", error);
   process.exitCode = 1;
