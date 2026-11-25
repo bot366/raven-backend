@@ -33,9 +33,10 @@ RAVEN is a React + TypeScript file-sharing application backed by Fastify, Neon P
 ## API routes
 - `GET /health`
 - `POST /auth/register`, `POST /auth/login`, `POST /auth/logout`, `GET /auth/me`
-- `GET /transfers`: authenticated user's latest 100 transfers
-- `POST /transfers`, `POST /transfers/:id/upload`: authenticated
-- `GET /transfers/:id`, `GET /transfers/:id/download`: authenticated owner only
+- `GET /transfers`: authenticated user's latest 100 sent transfers
+- `GET /transfers/received`: authenticated user's latest 100 files sent directly to their RAVEN account
+- `POST /transfers`, `POST /transfers/:id/upload`: authenticated; include optional `recipientEmail` when creating a direct account-to-account transfer
+- `GET /transfers/:id`, `GET /transfers/:id/download`: authenticated sender or designated recipient
 - `GET /share/:token`: public token-based download
 
 ## Security and storage notes
