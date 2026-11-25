@@ -114,11 +114,17 @@ async function sendVerificationEmail(email: string, displayName: string, token: 
 async function createAndSendVerification(userId: string, email: string, displayName: string): Promise<void> {
   const token = randomBytes(32).toString("base64url");
   await query("DELETE FROM email_verification_tokens WHERE user_id=$1", [userId]);
+  const tokenHash = hashSessionToken(token);
   await query(
     "INSERT INTO email_verification_tokens(user_id,token_hash,expires_at) VALUES($1,$2,$3)",
-    [userId, hashSessionToken(token), new Date(Date.now() + VERIFICATION_SECONDS * 1000)]
+    [userId, tokenHash, new Date(Date.now() + VERIFICATION_SECONDS * 1000)]
   );
-  await sendVerificationEmail(email, displayName, token);
+  try {
+    await sendVerificationEmail(email, displayName, token);
+  } catch (error) {
+    await query("DELETE FROM email_verification_tokens WHERE token_hash=$1", [tokenHash]);
+    throw error;
+  }
 }
 
 export async function authRoutes(app: FastifyInstance): Promise<void> {
