@@ -430,23 +430,22 @@ function SendModal({ onClose, onComplete }: { onClose: () => void; onComplete: (
         body: JSON.stringify({ filename: selected.name, filesize: selected.size, recipientIdentifier: recipient.trim() || undefined })
       });
       setDelivery("flying");
-      const result = await new Promise<{ shareUrl: string }>((resolve, reject) => {
+      const result = await new Promise<{ shareUrl: string | null }>((resolve, reject) => {
         const xhr = new XMLHttpRequest();
         xhr.open("POST", API + "/transfers/" + encodeURIComponent(created.transfer.id) + "/upload");
         xhr.withCredentials = true;
         xhr.upload.onprogress = (event) => { if (event.lengthComputable) setProgress(Math.min(99, Math.round(event.loaded / event.total * 100))); };
         xhr.onload = () => {
-          let data: { shareUrl?: string; error?: string } = {};
+          let data: { shareUrl?: string | null; error?: string } = {};
           try { data = JSON.parse(xhr.responseText); } catch { /* malformed response */ }
           if (xhr.status < 200 || xhr.status >= 300) { reject(new Error(data.error || "Upload failed (" + xhr.status + ").")); return; }
-          if (!data.shareUrl) { reject(new Error("Upload response did not include a share link.")); return; }
-          resolve({ shareUrl: data.shareUrl });
+          resolve({ shareUrl: data.shareUrl || null });
         };
         xhr.onerror = () => reject(new Error("Network error while sending the file."));
         xhr.onabort = () => reject(new Error("Upload was cancelled."));
         const form = new FormData(); form.append("file", selected, selected.name); xhr.send(form);
       });
-      setShareUrl(result.shareUrl); setProgress(100); setDelivery("success"); setSelected(null);
+      setShareUrl(result.shareUrl || ""); setProgress(100); setDelivery("success"); setSelected(null);
       if (fileInput.current) fileInput.current.value = "";
       await onComplete();
     } catch (error) {
