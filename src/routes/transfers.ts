@@ -11,6 +11,7 @@ import {SESSION_COOKIE_NAME,getAuthenticatedUser} from "../auth.js";
 
 type ReceivedTransferRow = TransferRow & {
  sender_display_name:string;
+ sender_username:string|null;
  sender_email:string;
 };
 
@@ -76,29 +77,47 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
    transfers:r.rows.map(row=>({
     ...publicTransfer(row),
     senderName:row.sender_display_name,
+    senderUsername:row.sender_username,
     senderEmail:row.sender_email
    }))
   };
  });
 
- app.post<{Body:{filename?:string;filesize?:number;recipientEmail?:string}}>("/transfers",async(request,reply)=>{
+ app.get<{Querystring:{identifier?:string}}>("/users/lookup",async(request,reply)=>{
+  const user=await requireUser(request,reply);if(!user)return;
+  const identifier=typeof request.query.identifier==="string"?request.query.identifier.trim().toLowerCase().replace(/^@/,""):"";
+  if(!identifier||identifier.length>254)return reply.code(400).send({error:"Enter a username or email address."});
+  const found=await query<{id:string;display_name:string;username:string|null}>(
+   "SELECT id,display_name,username FROM users WHERE LOWER(email)=$1 OR LOWER(username)=$1 LIMIT 1",
+   [identifier]
+  );
+  const recipient=found.rows[0];
+  if(!recipient)return reply.code(404).send({error:"No RAVEN account was found with that username or email."});
+  if(recipient.id===user.id)return reply.code(400).send({error:"You cannot send a file to your own account."});
+  return {user:{displayName:recipient.display_name,username:recipient.username}};
+ });
+
+ app.post<{Body:{filename?:string;filesize?:number;recipientIdentifier?:string}}>("/transfers",async(request,reply)=>{
   const user=await requireUser(request,reply);if(!user)return;
   const filename=request.body?.filename?.trim();
   const filesize=request.body?.filesize??0;
-  const recipientEmail=typeof request.body?.recipientEmail==="string"?request.body.recipientEmail.trim().toLowerCase():"";
+  const recipientIdentifier=typeof request.body?.recipientIdentifier==="string"?request.body.recipientIdentifier.trim().toLowerCase().replace(/^@/,""):"";
   if(!filename||filename.length>255)return reply.code(400).send({error:"A filename between 1 and 255 characters is required."});
   if(!Number.isSafeInteger(filesize)||filesize<0||filesize>config.maxFileSizeBytes)return reply.code(400).send({error:"Invalid file size."});
 
   let recipientId:string|null=null;
-  if(recipientEmail){
-   if(recipientEmail.length>254||!/^[^@ ]+@[^@ ]+[.][^@ ]+$/.test(recipientEmail)){
-    return reply.code(400).send({error:"Enter a valid recipient email address."});
+  if(recipientIdentifier){
+   const isEmail=/^[^@ ]+@[^@ ]+[.][^@ ]+$/.test(recipientIdentifier);
+   const isUsername=/^[a-z0-9_]{3,20}$/.test(recipientIdentifier);
+   if(recipientIdentifier.length>254||(!isEmail&&!isUsername)){
+    return reply.code(400).send({error:"Enter a valid username or email address."});
    }
-   if(recipientEmail===user.email.toLowerCase()){
-    return reply.code(400).send({error:"You cannot send a transfer to your own account."});
-   }
-   const recipient=await query<{id:string}>("SELECT id FROM users WHERE LOWER(email)=$1 LIMIT 1",[recipientEmail]);
-   if(!recipient.rows[0])return reply.code(404).send({error:"No RAVEN account was found with that email address."});
+   const recipient=await query<{id:string}>(
+    "SELECT id FROM users WHERE LOWER(email)=$1 OR LOWER(username)=$1 LIMIT 1",
+    [recipientIdentifier]
+   );
+   if(!recipient.rows[0])return reply.code(404).send({error:"No RAVEN account was found with that username or email."});
+   if(recipient.rows[0].id===user.id)return reply.code(400).send({error:"You cannot send a transfer to your own account."});
    recipientId=recipient.rows[0].id;
   }
 
