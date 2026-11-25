@@ -448,6 +448,10 @@ function SendModal({ onClose, onComplete }: { onClose: () => void; onComplete: (
       form.append("chunk", blob, "chunk-" + index + ".part");
       xhr.send(form);
     });
+  const dismiss = () => {
+    if (transferId) void api("/transfers/" + encodeURIComponent(transferId) + "/chunks", { method: "DELETE" }).catch(() => undefined);
+    onClose();
+  };
   const cancelUpload = async () => {
     cancelled.current = true;
     for (const xhr of activeRequests.current) xhr.abort();
@@ -550,9 +554,9 @@ function SendModal({ onClose, onComplete }: { onClose: () => void; onComplete: (
   };
   const onDrop = (event: DragEvent<HTMLDivElement>) => { event.preventDefault(); setDragging(false); chooseFile(event.dataTransfer.files?.[0]); };
 
-  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose(); }}>
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) dismiss(); }}>
     <form className="dialog-card send-dialog" onSubmit={(event) => void send(event)}>
-      <div className="dialog-heading"><div><span className="section-kicker">NEW DELIVERY</span><h2>Send a file</h2><p>Choose who should receive your file.</p></div><button className="icon-button close-dialog" type="button" onClick={onClose} disabled={busy} aria-label="Close"><Icon name="close"/></button></div>
+      <div className="dialog-heading"><div><span className="section-kicker">NEW DELIVERY</span><h2>Send a file</h2><p>Choose who should receive your file.</p></div><button className="icon-button close-dialog" type="button" onClick={dismiss} disabled={busy} aria-label="Close"><Icon name="close"/></button></div>
       <label className="field-label">Recipient <span className="optional-label">Optional for a share link</span><input value={recipient} onChange={(event) => { setRecipient(event.target.value); setRecipientMatch(null); setRecipientError(""); }} onBlur={() => { if (recipient.trim() && !transferId) void lookupRecipient(); }} placeholder="Email address or @username" disabled={busy || Boolean(transferId)}/></label>
       {recipientMatch && <div className="recipient-confirm"><Avatar user={{ id: "recipient", displayName: recipientMatch.displayName, username: recipientMatch.username, email: "" }} size="small"/><div><strong>{recipientMatch.displayName}</strong><span>@{recipientMatch.username}</span></div><Icon name="check"/></div>}
       {recipientError && <div className="form-alert">{recipientError}</div>}
@@ -570,7 +574,7 @@ function SendModal({ onClose, onComplete }: { onClose: () => void; onComplete: (
       {error && <div className="form-alert" role="alert">{error}</div>}
       {shareUrl && <div className="share-result"><div><span className="section-kicker">SHARE LINK READY</span><strong>{shareUrl}</strong></div><button className="outline-button" type="button" onClick={() => void copyLink()}><Icon name="copy"/>{copied ? "Copied" : "Copy"}</button></div>}
       <div className="dialog-actions">
-        <button className="secondary-action" type="button" onClick={() => busy ? void cancelUpload() : onClose()}>{busy ? "Cancel upload" : delivery === "success" ? "Done" : "Cancel"}</button>
+        <button className="secondary-action" type="button" onClick={() => busy ? void cancelUpload() : dismiss()}>{busy ? "Cancel upload" : delivery === "success" ? "Done" : "Cancel"}</button>
         <button className="primary-button send-submit" type="submit" disabled={!selected || busy || delivery === "success"}>{busy ? "Sending chunks…" : delivery === "success" ? "Sent successfully" : transferId ? <>Retry delivery <Icon name="send"/></> : <>Send file <Icon name="send"/></>}</button>
       </div>
       <p className="modal-footnote">Files are split into 8 MB chunks, verified individually and reassembled before delivery. Received files are never downloaded automatically.</p>
