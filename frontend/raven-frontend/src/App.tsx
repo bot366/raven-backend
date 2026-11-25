@@ -482,12 +482,20 @@ function SendModal({ onClose, onComplete }: { onClose: () => void; onComplete: (
         });
         id = created.transfer.id;
         setTransferId(id);
+        if (cancelled.current) {
+          await api("/transfers/" + encodeURIComponent(id) + "/chunks", { method: "DELETE" }).catch(() => undefined);
+          return;
+        }
       }
       const chunkCount = Math.max(1, Math.ceil(selected.size / CHUNK_SIZE));
       const startData = await api<{ receivedChunks: { chunk_index: number; chunk_size: number }[]; receivedBytes: number }>(
         "/transfers/" + encodeURIComponent(id) + "/chunks/start",
         { method: "POST", body: JSON.stringify({ chunkSize: CHUNK_SIZE, chunkCount, mimeType: selected.type || "application/octet-stream" }) }
       );
+      if (cancelled.current) {
+        await api("/transfers/" + encodeURIComponent(id) + "/chunks", { method: "DELETE" }).catch(() => undefined);
+        return;
+      }
       const received = new Set(startData.receivedChunks.map((chunk) => Number(chunk.chunk_index)));
       let completedBytes = startData.receivedBytes;
       setProgress(selected.size ? Math.min(99, Math.round(completedBytes / selected.size * 100)) : 0);
