@@ -49,6 +49,12 @@ async function accessibleTransfer(id:string,userId:string){
 
 function safeName(name:string){return name.replace(/[\r\n"\\]/g,"_").slice(0,255);}
 
+async function hashFile(filePath:string):Promise<string>{
+ const hash=createHash("sha256");
+ for await(const chunk of fs.createReadStream(filePath))hash.update(chunk);
+ return hash.digest("hex");
+}
+
 async function sendFile(reply:FastifyReply,row:TransferRow){
  if(row.status!=="completed"||!row.storage_path)return reply.code(410).send({error:"This file is no longer available."});
  if(row.expires_at&&new Date(row.expires_at)<new Date())return reply.code(410).send({error:"This file has expired."});
@@ -86,14 +92,19 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
    [transfer.id,user.id,chunkSize,chunkCount,mimeType]
   );
   if(!updated.rows[0])return reply.code(409).send({error:"Could not initialize this upload."});
-  const received=await query<{chunk_index:number;chunk_size:number;sha256:string}>(
-   "SELECT chunk_index,chunk_size,sha256 FROM transfer_chunks WHERE transfer_id=$1 ORDER BY chunk_index",
+  const received=await query<{chunk_index:number;chunk_size:number;sha256:string;storage_path:string}>(
+   "SELECT chunk_index,chunk_size,sha256,storage_path FROM transfer_chunks WHERE transfer_id=$1 ORDER BY chunk_index",
    [transfer.id]
   );
+  const validReceived=[] as typeof received.rows;
+  for(const chunk of received.rows){
+   if(fs.existsSync(chunk.storage_path))validReceived.push(chunk);
+   else await query("DELETE FROM transfer_chunks WHERE transfer_id=$1 AND chunk_index=$2",[transfer.id,chunk.chunk_index]);
+  }
   return {
    transferId:transfer.id,chunkSize,chunkCount,
-   receivedChunks:received.rows,
-   receivedBytes:received.rows.reduce((total,row)=>total+Number(row.chunk_size),0)
+   receivedChunks:validReceived.map(({chunk_index,chunk_size,sha256})=>({chunk_index,chunk_size,sha256})),
+   receivedBytes:validReceived.reduce((total,row)=>total+Number(row.chunk_size),0)
   };
  });
 
@@ -103,8 +114,8 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
   const transfer=await ownedTransfer(request.params.id,user.id) as ChunkTransferRow|undefined;
   if(!transfer)return reply.code(404).send({error:"Transfer not found."});
   if(!transfer.chunk_size||!transfer.chunk_count)return reply.code(409).send({error:"Chunked upload has not been initialized."});
-  const received=await query<{chunk_index:number;chunk_size:number;sha256:string}>(
-   "SELECT chunk_index,chunk_size,sha256 FROM transfer_chunks WHERE transfer_id=$1 ORDER BY chunk_index",
+  const received=await query<{chunk_index:number;chunk_size:number;sha256:string;storage_path:string}>(
+   "SELECT chunk_index,chunk_size,sha256,storage_path FROM transfer_chunks WHERE transfer_id=$1 ORDER BY chunk_index",
    [transfer.id]
   );
   const validReceived=[] as typeof received.rows;
@@ -160,12 +171,15 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
     "SELECT chunk_index,chunk_size,sha256,storage_path FROM transfer_chunks WHERE transfer_id=$1 AND chunk_index=$2",
     [transfer.id,index]
    );
-   if(existing.rows[0]){
+   if(existing.rows[0]&&fs.existsSync(existing.rows[0].storage_path)){
     await unlink(destination).catch(()=>undefined);
     if(Number(existing.rows[0].chunk_size)===byteCount&&existing.rows[0].sha256===actualHash){
      return {received:true,alreadyReceived:true,chunkIndex:index,chunkSize:byteCount,sha256:actualHash};
     }
     return reply.code(409).send({error:"A different chunk is already stored at this position."});
+   }
+   if(existing.rows[0]&&!fs.existsSync(existing.rows[0].storage_path)){
+    await query("DELETE FROM transfer_chunks WHERE transfer_id=$1 AND chunk_index=$2",[transfer.id,index]);
    }
    try{
     await query(
