@@ -1,6 +1,6 @@
 import { pool } from "./db.js";
 
-const sql = \`
+const sql = `
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 CREATE TABLE IF NOT EXISTS transfers (
  id UUID PRIMARY KEY DEFAULT gen_random_uuid(), filename TEXT NOT NULL,
@@ -63,14 +63,14 @@ CREATE INDEX IF NOT EXISTS transfers_user_id_created_at_idx ON transfers(user_id
 CREATE INDEX IF NOT EXISTS transfers_recipient_created_at_idx ON transfers(recipient_user_id,created_at DESC);
 CREATE INDEX IF NOT EXISTS transfer_chunks_transfer_id_idx ON transfer_chunks(transfer_id);
 CREATE INDEX IF NOT EXISTS email_verification_tokens_user_created_idx ON email_verification_tokens(user_id,created_at DESC);
-\`;
+`;
 
 const client = await pool.connect();
 try {
   await client.query("BEGIN");
   await client.query(sql);
   await client.query("COMMIT");
-  const result = await client.query(\`
+  const result = await client.query(`
     SELECT current_database() AS database,
       to_regclass('public.transfers') AS transfers_table,
       to_regclass('public.users') AS users_table,
@@ -78,7 +78,7 @@ try {
       to_regclass('public.transfer_chunks') AS transfer_chunks_table,
       to_regclass('public.email_verification_tokens') AS verification_tokens_table,
       EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='users' AND column_name='email_verified') AS email_verified_column
-  \`);
+  `);
   console.log("RAVEN database migration completed:", result.rows[0]);
 } catch (error) {
   await client.query("ROLLBACK").catch(() => undefined);
