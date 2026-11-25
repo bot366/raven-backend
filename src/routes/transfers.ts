@@ -67,7 +67,7 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
   const user=await requireUser(request,reply);if(!user)return;
   await query("UPDATE transfers SET status='expired' WHERE recipient_user_id=$1 AND expires_at<=NOW() AND status='completed'",[user.id]);
   const r=await query<ReceivedTransferRow>(
-   `SELECT t.*,u.display_name AS sender_display_name,u.email AS sender_email
+   `SELECT t.*,u.display_name AS sender_display_name,u.username AS sender_username,u.email AS sender_email
     FROM transfers t
     JOIN users u ON u.id=t.user_id
     WHERE t.recipient_user_id=$1 AND t.status='completed'
