@@ -7,6 +7,7 @@ export interface AuthUser {
   displayName: string;
   username: string | null;
   email: string;
+  emailVerified: boolean;
   hasAvatar: boolean;
 }
 export function hashSessionToken(token: string): string {
@@ -19,11 +20,12 @@ export async function getAuthenticatedUser(token?: string): Promise<AuthUser | n
     display_name: string;
     username: string | null;
     email: string;
+    email_verified: boolean;
     avatar_path: string | null;
   }>(
-    `SELECT u.id,u.display_name,u.username,u.email,u.avatar_path
+    \`SELECT u.id,u.display_name,u.username,u.email,u.email_verified,u.avatar_path
      FROM sessions s JOIN users u ON u.id=s.user_id
-     WHERE s.token_hash=$1 AND s.expires_at>NOW() LIMIT 1`,
+     WHERE s.token_hash=$1 AND s.expires_at>NOW() LIMIT 1\`,
     [hashSessionToken(token)]
   );
   const user = result.rows[0];
@@ -33,6 +35,7 @@ export async function getAuthenticatedUser(token?: string): Promise<AuthUser | n
     displayName: user.display_name,
     username: user.username,
     email: user.email,
+    emailVerified: user.email_verified === true,
     hasAvatar: Boolean(user.avatar_path)
   };
 }
