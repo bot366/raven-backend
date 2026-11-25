@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type DragEvent } from "react";
 
 type User = { id: string; displayName: string; email: string };
-type Transfer = { id: string; filename: string; filesize: number; status: string; createdAt?: string; downloadUrl?: string | null };
+type Transfer = { id: string; filename: string; filesize: number; status: string; createdAt?: string; downloadUrl?: string | null; senderName?: string; senderEmail?: string };
 type Health = "checking" | "online" | "offline";
 const API = (import.meta.env.VITE_API_URL || "https://raven-backend-qg3w.onrender.com").replace(/\/$/, "");
 const MAX_MB = Number(import.meta.env.VITE_MAX_FILE_SIZE_MB || 100);
@@ -34,6 +34,8 @@ function App() {
   const [authError, setAuthError] = useState("");
   const [health, setHealth] = useState<Health>("checking");
   const [transfers, setTransfers] = useState<Transfer[]>([]);
+  const [received, setReceived] = useState<Transfer[]>([]);
+  const [recipientEmail, setRecipientEmail] = useState("");
   const [selected, setSelected] = useState<File | null>(null);
   const [dragging, setDragging] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -50,14 +52,20 @@ function App() {
   }, []);
   const refreshTransfers = useCallback(async () => {
     if (!user) return;
-    try { const data = await api<{ transfers: Transfer[] }>("/transfers"); setTransfers(data.transfers); }
-    catch (e) { setError(e instanceof Error ? e.message : "Could not load transfers."); }
+    try {
+      const [sentData, receivedData] = await Promise.all([
+        api<{ transfers: Transfer[] }>("/transfers"),
+        api<{ transfers: Transfer[] }>("/transfers/received")
+      ]);
+      setTransfers(sentData.transfers);
+      setReceived(receivedData.transfers);
+    } catch (e) { setError(e instanceof Error ? e.message : "Could not load transfers."); }
   }, [user]);
   useEffect(() => {
     void refreshHealth();
     api<{ user: User }>("/auth/me").then((d) => setUser(d.user)).catch(() => setUser(null)).finally(() => setChecking(false));
   }, [refreshHealth]);
-  useEffect(() => { if (user) void refreshTransfers(); else setTransfers([]); }, [user, refreshTransfers]);
+  useEffect(() => { if (user) void refreshTransfers(); else { setTransfers([]); setReceived([]); } }, [user, refreshTransfers]);
 
   const submitAuth = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault(); setAuthError(""); setAuthBusy(true);
@@ -90,7 +98,7 @@ function App() {
     setUploading(true); setError(""); setShareUrl(""); setProgress(0);
     try {
       const created = await api<{ transfer: { id: string } }>("/transfers", {
-        method: "POST", body: JSON.stringify({ filename: selected.name, filesize: selected.size })
+        method: "POST", body: JSON.stringify({ filename: selected.name, filesize: selected.size, recipientEmail: recipientEmail.trim() || undefined })
       });
       const result = await new Promise<{ shareUrl: string }>((resolve, reject) => {
         const xhr = new XMLHttpRequest();
@@ -107,7 +115,7 @@ function App() {
         xhr.onerror = () => reject(new Error("Network error while uploading."));
         const form = new FormData(); form.append("file", selected, selected.name); xhr.send(form);
       });
-      setShareUrl(result.shareUrl); setProgress(100); setSelected(null);
+      setShareUrl(result.shareUrl); setProgress(100); setSelected(null); setRecipientEmail("");
       if (input.current) input.current.value = "";
       await refreshTransfers();
     } catch (e) { setError(e instanceof Error ? e.message : "Upload failed."); }
@@ -150,6 +158,7 @@ function App() {
         <section className="dashboard-welcome"><div><div className="eyebrow"><span className="eyebrow-line" /> YOUR RAVEN WORKSPACE</div><h1>Good to have you<br /><span>back, {user.displayName.split(" ")[0]}.</span></h1><p className="hero-copy">Upload something new or pick up where you left off.</p></div><div className="dashboard-stat"><span>YOUR TRANSFERS</span><strong>{transfers.length}</strong><small>Latest 100 shown</small></div></section>
         <section className="workspace">
           <div className="upload-panel"><div className="panel-heading"><div><p className="section-kicker">NEW TRANSFER</p><h2>Upload a file</h2></div><span className="secure-note"><ShieldIcon /> Private workspace</span></div>
+            <label className="recipient-field">Send directly to a RAVEN account (optional)<input type="email" value={recipientEmail} onChange={(e) => setRecipientEmail(e.target.value)} placeholder="friend@example.com" disabled={uploading} /><span>Leave blank to create a normal share link. Recipient must already have a RAVEN account.</span></label>
             <div className={"drop-zone" + (dragging ? " is-dragging" : "")} onDragEnter={(e) => { e.preventDefault(); setDragging(true); }} onDragOver={(e) => e.preventDefault()} onDragLeave={(e) => { e.preventDefault(); if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragging(false); }} onDrop={drop} onClick={() => !uploading && input.current?.click()} role="button" tabIndex={0} onKeyDown={(e) => { if ((e.key === "Enter" || e.key === " ") && !uploading) input.current?.click(); }}>
               <input ref={input} className="visually-hidden" type="file" onChange={(e) => choose(e.target.files?.[0])} disabled={uploading} />
               {selected ? <><div className="file-icon"><FileIcon /></div><strong className="selected-file-name">{selected.name}</strong><span className="drop-hint">{bytes(selected.size)} · Ready to upload</span><button className="remove-file" type="button" onClick={(e) => { e.stopPropagation(); setSelected(null); if (input.current) input.current.value = ""; }}>Remove file</button></> : <><div className="upload-icon"><UploadIcon /></div><strong className="drop-title">Drop your file here</strong><span className="drop-hint">or <b className="browse-text">browse files</b> on your device</span><span className="file-limit">Maximum file size: {MAX_MB} MB</span></>}
@@ -163,6 +172,9 @@ function App() {
         </section>
         <section className="recent-section"><div className="recent-heading"><div><p className="section-kicker">YOUR FILES</p><h2>Transfer history</h2></div><span className="recent-count">{transfers.length} transfers</span></div>
           {transfers.length === 0 ? <div className="empty-state"><strong>No transfers yet</strong><span>Your uploaded files will appear here.</span></div> : <div className="recent-list">{transfers.map((t) => <article className="recent-item" key={t.id}><div className="recent-file-icon"><FileIcon /></div><div className="recent-file-info"><strong>{t.filename}</strong><span>{bytes(t.filesize)} · {t.createdAt ? new Date(t.createdAt).toLocaleString() : "Recently"}</span></div><span className={"transfer-status transfer-" + t.status}>{t.status}</span>{t.status === "completed" && t.downloadUrl && <a className="secondary-button" href={t.downloadUrl}>Download</a>}</article>)}</div>}
+        </section>
+        <section className="recent-section"><div className="recent-heading"><div><p className="section-kicker">SHARED WITH YOU</p><h2>Received files</h2></div><span className="recent-count">{received.length} received</span></div>
+          {received.length === 0 ? <div className="empty-state"><strong>Your inbox is empty</strong><span>Files sent directly to your RAVEN account will appear here.</span></div> : <div className="recent-list">{received.map((t) => <article className="recent-item" key={t.id}><div className="recent-file-icon"><FileIcon /></div><div className="recent-file-info"><strong>{t.filename}</strong><span>{bytes(t.filesize)} · From {t.senderName || t.senderEmail || "RAVEN user"} · {t.createdAt ? new Date(t.createdAt).toLocaleString() : "Recently"}</span></div><span className={"transfer-status transfer-" + t.status}>{t.status}</span>{t.status === "completed" && <a className="secondary-button" href={API + "/transfers/" + encodeURIComponent(t.id) + "/download"}>Download</a>}</article>)}</div>}
         </section>
         <footer className="footer"><span>RAVEN / Your files, in one place.</span><span>Secure account workspace</span></footer>
       </main>
