@@ -1,5 +1,6 @@
-import {pool} from "./db.js";
-const sql=`
+import { pool } from "./db.js";
+
+const sql = \`
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 CREATE TABLE IF NOT EXISTS transfers (
  id UUID PRIMARY KEY DEFAULT gen_random_uuid(), filename TEXT NOT NULL,
@@ -17,7 +18,11 @@ CREATE TABLE IF NOT EXISTS users (
  id UUID PRIMARY KEY DEFAULT gen_random_uuid(), display_name TEXT NOT NULL,
  email TEXT NOT NULL, password_hash TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_path TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_mime_type TEXT;
 CREATE UNIQUE INDEX IF NOT EXISTS users_email_unique ON users(LOWER(email));
+CREATE UNIQUE INDEX IF NOT EXISTS users_username_unique ON users(LOWER(username)) WHERE username IS NOT NULL;
 CREATE TABLE IF NOT EXISTS sessions (
  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -30,13 +35,27 @@ CREATE INDEX IF NOT EXISTS sessions_user_id_idx ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS sessions_expires_at_idx ON sessions(expires_at);
 CREATE INDEX IF NOT EXISTS transfers_user_id_created_at_idx ON transfers(user_id,created_at DESC);
 CREATE INDEX IF NOT EXISTS transfers_recipient_created_at_idx ON transfers(recipient_user_id,created_at DESC);
-`;
-const client=await pool.connect();
-try{
- await client.query("BEGIN");
- await client.query(sql);
- await client.query("COMMIT");
- const result=await client.query(`SELECT current_database() AS database,to_regclass('public.transfers') AS transfers_table,to_regclass('public.users') AS users_table,to_regclass('public.sessions') AS sessions_table`);
- console.log("RAVEN database migration completed:",result.rows[0]);
-}catch(error){await client.query("ROLLBACK").catch(()=>undefined);console.error("Migration failed:",error);process.exitCode=1;}
-finally{client.release();await pool.end();}
+\`;
+
+const client = await pool.connect();
+try {
+  await client.query("BEGIN");
+  await client.query(sql);
+  await client.query("COMMIT");
+  const result = await client.query(\`
+    SELECT current_database() AS database,
+      to_regclass('public.transfers') AS transfers_table,
+      to_regclass('public.users') AS users_table,
+      to_regclass('public.sessions') AS sessions_table,
+      EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='users' AND column_name='username') AS username_column,
+      EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='users' AND column_name='avatar_path') AS avatar_column
+  \`);
+  console.log("RAVEN database migration completed:", result.rows[0]);
+} catch (error) {
+  await client.query("ROLLBACK").catch(() => undefined);
+  console.error("Migration failed:", error);
+  process.exitCode = 1;
+} finally {
+  client.release();
+  await pool.end();
+}
