@@ -111,8 +111,11 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
   );
   const validReceived=[] as typeof received.rows;
   for(const chunk of received.rows){
-   if(fs.existsSync(chunk.storage_path))validReceived.push(chunk);
-   else await query("DELETE FROM transfer_chunks WHERE transfer_id=$1 AND chunk_index=$2",[transfer.id,chunk.chunk_index]);
+   if(await verifyStoredChunk(chunk))validReceived.push(chunk);
+   else{
+    await unlink(chunk.storage_path).catch(()=>undefined);
+    await query("DELETE FROM transfer_chunks WHERE transfer_id=$1 AND chunk_index=$2",[transfer.id,chunk.chunk_index]);
+   }
   }
   return {
    transferId:transfer.id,chunkSize,chunkCount,
@@ -191,7 +194,8 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
     }
     return reply.code(409).send({error:"A different chunk is already stored at this position."});
    }
-   if(existing.rows[0]&&!fs.existsSync(existing.rows[0].storage_path)){
+   if(existing.rows[0]){
+    await unlink(existing.rows[0].storage_path).catch(()=>undefined);
     await query("DELETE FROM transfer_chunks WHERE transfer_id=$1 AND chunk_index=$2",[transfer.id,index]);
    }
    try{
