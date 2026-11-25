@@ -55,6 +55,19 @@ async function hashFile(filePath:string):Promise<string>{
  return hash.digest("hex");
 }
 
+async function verifyStoredChunk(chunk:ChunkRow):Promise<boolean>{
+ if(!fs.existsSync(chunk.storage_path))return false;
+ const hash=createHash("sha256");
+ let size=0;
+ try{
+  for await(const data of fs.createReadStream(chunk.storage_path)){
+   const buffer=Buffer.isBuffer(data)?data:Buffer.from(data);
+   size+=buffer.length;hash.update(buffer);
+  }
+  return size===Number(chunk.chunk_size)&&hash.digest("hex")===chunk.sha256;
+ }catch{return false;}
+}
+
 async function sendFile(reply:FastifyReply,row:TransferRow){
  if(row.status!=="completed"||!row.storage_path)return reply.code(410).send({error:"This file is no longer available."});
  if(row.expires_at&&new Date(row.expires_at)<new Date())return reply.code(410).send({error:"This file has expired."});
@@ -119,7 +132,7 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
    [transfer.id]
   );
   const validReceived=[] as typeof received.rows;
-  for(const chunk of received.rows){if(fs.existsSync(chunk.storage_path))validReceived.push(chunk);else await query("DELETE FROM transfer_chunks WHERE transfer_id=$1 AND chunk_index=$2",[transfer.id,chunk.chunk_index]);}
+  for(const chunk of received.rows){if(await verifyStoredChunk(chunk))validReceived.push(chunk);else{await unlink(chunk.storage_path).catch(()=>undefined);await query("DELETE FROM transfer_chunks WHERE transfer_id=$1 AND chunk_index=$2",[transfer.id,chunk.chunk_index]);}}
   return {
    transferId:transfer.id,chunkSize:transfer.chunk_size,chunkCount:transfer.chunk_count,
    receivedChunks:validReceived.map(({chunk_index,chunk_size,sha256})=>({chunk_index,chunk_size,sha256})),
@@ -171,7 +184,7 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
     "SELECT chunk_index,chunk_size,sha256,storage_path FROM transfer_chunks WHERE transfer_id=$1 AND chunk_index=$2",
     [transfer.id,index]
    );
-   if(existing.rows[0]&&fs.existsSync(existing.rows[0].storage_path)){
+   if(existing.rows[0]&&await verifyStoredChunk(existing.rows[0])){
     await unlink(destination).catch(()=>undefined);
     if(Number(existing.rows[0].chunk_size)===byteCount&&existing.rows[0].sha256===actualHash){
      return {received:true,alreadyReceived:true,chunkIndex:index,chunkSize:byteCount,sha256:actualHash};
