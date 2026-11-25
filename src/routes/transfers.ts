@@ -1,5 +1,6 @@
 import type {FastifyInstance,FastifyReply,FastifyRequest} from "fastify";
-import {randomUUID} from "node:crypto";
+import {randomUUID,createHash} from "node:crypto";
+import {Transform,Readable} from "node:stream";
 import path from "node:path";
 import fs from "node:fs";
 import {mkdir,unlink} from "node:fs/promises";
@@ -9,6 +10,8 @@ import {config} from "../config.js";
 import type {TransferRow} from "../types.js";
 import {SESSION_COOKIE_NAME,getAuthenticatedUser} from "../auth.js";
 
+type ChunkRow = {chunk_index:number;chunk_size:number;sha256:string;storage_path:string};
+type ChunkTransferRow = TransferRow & {chunk_size:number|null;chunk_count:number|null};
 type ReceivedTransferRow = TransferRow & {
  sender_display_name:string;
  sender_username:string|null;
@@ -20,7 +23,8 @@ function publicTransfer(row:TransferRow){
   id:row.id,filename:row.filename,filesize:Number(row.filesize),status:row.status,
   createdAt:row.created_at,uploadedAt:row.uploaded_at,expiresAt:row.expires_at,
   downloadUrl:row.status==="completed"?config.publicBaseUrl+"/transfers/"+row.id+"/download":null,
-  shareUrl:row.share_token?config.publicBaseUrl+"/share/"+row.share_token:null
+  shareUrl:row.share_token?config.publicBaseUrl+"/share/"+row.share_token:null,
+  sha256:row.sha256
  };
 }
 
@@ -56,6 +60,224 @@ async function sendFile(reply:FastifyReply,row:TransferRow){
 }
 
 export async function transferRoutes(app:FastifyInstance):Promise<void>{
+ const MAX_CHUNK_BYTES=8*1024*1024;
+ const MIN_CHUNK_BYTES=256*1024;
+
+ // Start (or re-open) a chunked upload. The transfer itself is created by POST /transfers.
+ app.post<{Params:{id:string};Body:{chunkSize?:number;chunkCount?:number;mimeType?:string}}>("/transfers/:id/chunks/start",async(request,reply)=>{
+  const user=await requireUser(request,reply);if(!user)return;
+  const transfer=await ownedTransfer(request.params.id,user.id) as ChunkTransferRow|undefined;
+  if(!transfer)return reply.code(404).send({error:"Transfer not found."});
+  if(transfer.status!=="pending")return reply.code(409).send({error:"This transfer is no longer pending."});
+  if(transfer.expires_at&&new Date(transfer.expires_at)<new Date())return reply.code(410).send({error:"This transfer has expired."});
+  const chunkSize=request.body?.chunkSize;
+  const chunkCount=request.body?.chunkCount;
+  const mimeType=typeof request.body?.mimeType==="string"?request.body.mimeType.slice(0,150):"application/octet-stream";
+  if(!Number.isSafeInteger(chunkSize)||!Number.isSafeInteger(chunkCount)||chunkSize!<MIN_CHUNK_BYTES||chunkSize!>MAX_CHUNK_BYTES||chunkCount!<1){
+   return reply.code(400).send({error:"Invalid chunk size or count."});
+  }
+  const expectedCount=Math.max(1,Math.ceil(Number(transfer.filesize)/chunkSize!));
+  if(chunkCount!==expectedCount)return reply.code(400).send({error:"Chunk count does not match the declared file size."});
+  if(transfer.chunk_size!==null&&transfer.chunk_size!==undefined&&(transfer.chunk_size!==chunkSize||transfer.chunk_count!==chunkCount)){
+   return reply.code(409).send({error:"This upload was already started with different chunk settings."});
+  }
+  const updated=await query(
+   "UPDATE transfers SET chunk_size=$3,chunk_count=$4,mime_type=$5 WHERE id=$1 AND user_id=$2 AND status='pending' RETURNING id,chunk_size,chunk_count",
+   [transfer.id,user.id,chunkSize,chunkCount,mimeType]
+  );
+  if(!updated.rows[0])return reply.code(409).send({error:"Could not initialize this upload."});
+  const received=await query<{chunk_index:number;chunk_size:number;sha256:string}>(
+   "SELECT chunk_index,chunk_size,sha256 FROM transfer_chunks WHERE transfer_id=$1 ORDER BY chunk_index",
+   [transfer.id]
+  );
+  return {
+   transferId:transfer.id,chunkSize,chunkCount,
+   receivedChunks:received.rows,
+   receivedBytes:received.rows.reduce((total,row)=>total+Number(row.chunk_size),0)
+  };
+ });
+
+ // Report received chunks so the browser can resume without re-uploading them.
+ app.get<{Params:{id:string}}>("/transfers/:id/chunks",async(request,reply)=>{
+  const user=await requireUser(request,reply);if(!user)return;
+  const transfer=await ownedTransfer(request.params.id,user.id) as ChunkTransferRow|undefined;
+  if(!transfer)return reply.code(404).send({error:"Transfer not found."});
+  if(!transfer.chunk_size||!transfer.chunk_count)return reply.code(409).send({error:"Chunked upload has not been initialized."});
+  const received=await query<{chunk_index:number;chunk_size:number;sha256:string}>(
+   "SELECT chunk_index,chunk_size,sha256 FROM transfer_chunks WHERE transfer_id=$1 ORDER BY chunk_index",
+   [transfer.id]
+  );
+  return {
+   transferId:transfer.id,chunkSize:transfer.chunk_size,chunkCount:transfer.chunk_count,
+   receivedChunks:received.rows,
+   receivedBytes:received.rows.reduce((total,row)=>total+Number(row.chunk_size),0)
+  };
+ });
+
+ // Receive one chunk. Repeated identical chunk requests are safe and idempotent.
+ app.put<{Params:{id:string;index:string}}>("/transfers/:id/chunks/:index",async(request,reply)=>{
+  const user=await requireUser(request,reply);if(!user)return;
+  const transfer=await ownedTransfer(request.params.id,user.id) as ChunkTransferRow|undefined;
+  if(!transfer)return reply.code(404).send({error:"Transfer not found."});
+  if(transfer.status!=="pending")return reply.code(409).send({error:"This transfer is no longer accepting chunks."});
+  if(transfer.expires_at&&new Date(transfer.expires_at)<new Date())return reply.code(410).send({error:"This transfer has expired."});
+  if(!transfer.chunk_size||!transfer.chunk_count)return reply.code(409).send({error:"Initialize the chunked upload first."});
+  const index=Number(request.params.index);
+  if(!Number.isSafeInteger(index)||index<0||index>=transfer.chunk_count)return reply.code(400).send({error:"Invalid chunk index."});
+  const expectedSize=index===transfer.chunk_count-1
+   ? Number(transfer.filesize)-transfer.chunk_size*(transfer.chunk_count-1)
+   : transfer.chunk_size;
+  const expectedHash=request.headers["x-chunk-sha256"];
+  if(typeof expectedHash!=="string"||!/^[a-f0-9]{64}$/.test(expectedHash))return reply.code(400).send({error:"A valid X-Chunk-Sha256 header is required."});
+
+  const part=await request.file({limits:{fileSize:MAX_CHUNK_BYTES,files:1}});
+  if(!part)return reply.code(400).send({error:"Attach one chunk using the multipart field name 'chunk'."});
+
+  const chunkDirectory=path.join(config.storageDir,"chunks",transfer.id);
+  await mkdir(chunkDirectory,{recursive:true});
+  const destination=path.join(chunkDirectory,index+"-"+randomUUID()+".part");
+  const hash=createHash("sha256");
+  let byteCount=0;
+  const meter=new Transform({
+   transform(chunk:Buffer,_encoding,callback){
+    byteCount+=chunk.length;hash.update(chunk);callback(null,chunk);
+   }
+  });
+  try{
+   await pipeline(part.file,meter,fs.createWriteStream(destination,{flags:"wx"}));
+   if(part.file.truncated||byteCount!==expectedSize){
+    await unlink(destination).catch(()=>undefined);
+    return reply.code(400).send({error:"Chunk size does not match the expected size."});
+   }
+   const actualHash=hash.digest("hex");
+   if(actualHash!==expectedHash){
+    await unlink(destination).catch(()=>undefined);
+    return reply.code(422).send({error:"Chunk integrity check failed. Retry this chunk."});
+   }
+   const existing=await query<ChunkRow>(
+    "SELECT chunk_index,chunk_size,sha256,storage_path FROM transfer_chunks WHERE transfer_id=$1 AND chunk_index=$2",
+    [transfer.id,index]
+   );
+   if(existing.rows[0]){
+    await unlink(destination).catch(()=>undefined);
+    if(Number(existing.rows[0].chunk_size)===byteCount&&existing.rows[0].sha256===actualHash){
+     return {received:true,alreadyReceived:true,chunkIndex:index,chunkSize:byteCount,sha256:actualHash};
+    }
+    return reply.code(409).send({error:"A different chunk is already stored at this position."});
+   }
+   try{
+    await query(
+     "INSERT INTO transfer_chunks(transfer_id,chunk_index,chunk_size,sha256,storage_path) VALUES($1,$2,$3,$4,$5)",
+     [transfer.id,index,byteCount,actualHash,destination]
+    );
+   }catch(error){
+    await unlink(destination).catch(()=>undefined);
+    if(typeof error==="object"&&error!==null&&"code" in error&&error.code==="23505"){
+     return reply.code(409).send({error:"This chunk was received simultaneously. Check upload status and retry if needed."});
+    }
+    throw error;
+   }
+   return {received:true,alreadyReceived:false,chunkIndex:index,chunkSize:byteCount,sha256:actualHash};
+  }catch(error){
+   await unlink(destination).catch(()=>undefined);
+   if(part.file.truncated)return reply.code(413).send({error:"Chunk exceeds the 8 MB chunk limit."});
+   throw error;
+  }
+ });
+
+ // Assemble chunks in order, re-check every stored part, hash the final file, then publish it.
+ app.post<{Params:{id:string}}>("/transfers/:id/chunks/complete",async(request,reply)=>{
+  const user=await requireUser(request,reply);if(!user)return;
+  const transfer=await ownedTransfer(request.params.id,user.id) as ChunkTransferRow|undefined;
+  if(!transfer)return reply.code(404).send({error:"Transfer not found."});
+  if(transfer.status==="completed")return {message:"Upload already completed.",transfer:publicTransfer(transfer),shareUrl:transfer.share_token?config.publicBaseUrl+"/share/"+transfer.share_token:null};
+  if(transfer.status!=="pending")return reply.code(409).send({error:"This transfer is no longer pending."});
+  if(!transfer.chunk_size||!transfer.chunk_count)return reply.code(409).send({error:"Initialize the chunked upload first."});
+  const parts=await query<ChunkRow>(
+   "SELECT chunk_index,chunk_size,sha256,storage_path FROM transfer_chunks WHERE transfer_id=$1 ORDER BY chunk_index",
+   [transfer.id]
+  );
+  if(parts.rows.length!==transfer.chunk_count)return reply.code(409).send({error:"Some chunks are still missing.",received:parts.rows.length,expected:transfer.chunk_count});
+  for(let index=0;index<parts.rows.length;index++){
+   if(parts.rows[index].chunk_index!==index)return reply.code(409).send({error:"Chunk sequence is incomplete.",missingIndex:index});
+   const expectedSize=index===transfer.chunk_count-1
+    ? Number(transfer.filesize)-transfer.chunk_size*(transfer.chunk_count-1)
+    : transfer.chunk_size;
+   if(Number(parts.rows[index].chunk_size)!==expectedSize||!fs.existsSync(parts.rows[index].storage_path)){
+    return reply.code(409).send({error:"A stored chunk is missing or has an invalid size.",chunkIndex:index});
+   }
+  }
+
+  const finalDirectory=config.storageDir;
+  await mkdir(finalDirectory,{recursive:true});
+  const destination=path.join(finalDirectory,randomUUID()+path.extname(transfer.filename).slice(0,20));
+  const finalHash=createHash("sha256");
+  let totalBytes=0;
+  async function* orderedChunks(){
+   for(const part of parts.rows){
+    const partHash=createHash("sha256");
+    let partBytes=0;
+    for await(const data of fs.createReadStream(part.storage_path)){
+     const buffer=Buffer.isBuffer(data)?data:Buffer.from(data);
+     partBytes+=buffer.length;totalBytes+=buffer.length;
+     partHash.update(buffer);finalHash.update(buffer);
+     yield buffer;
+    }
+    if(partBytes!==Number(part.chunk_size)||partHash.digest("hex")!==part.sha256){
+     throw new Error("Stored chunk "+part.chunk_index+" failed integrity verification.");
+    }
+   }
+  }
+  try{
+   await pipeline(Readable.from(orderedChunks()),fs.createWriteStream(destination,{flags:"wx"}));
+   if(totalBytes!==Number(transfer.filesize)){
+    await unlink(destination).catch(()=>undefined);
+    return reply.code(422).send({error:"Reconstructed file size does not match the original file size."});
+   }
+   const digest=finalHash.digest("hex");
+   const token=randomUUID();
+   const updated=await query<TransferRow>(
+    "UPDATE transfers SET storage_path=$3,sha256=$4,uploaded_at=NOW(),status='completed',share_token=CASE WHEN recipient_user_id IS NULL THEN $5::uuid ELSE NULL::uuid END WHERE id=$1 AND user_id=$2 AND status='pending' RETURNING *",
+    [transfer.id,user.id,destination,digest,token]
+   );
+   if(!updated.rows[0]){
+    await unlink(destination).catch(()=>undefined);
+    return reply.code(409).send({error:"Transfer changed before assembly completed."});
+   }
+   for(const part of parts.rows)await unlink(part.storage_path).catch(()=>undefined);
+   await query("DELETE FROM transfer_chunks WHERE transfer_id=$1",[transfer.id]);
+   await fs.promises.rm(path.join(config.storageDir,"chunks",transfer.id),{recursive:true,force:true}).catch(()=>undefined);
+   const completed=updated.rows[0];
+   return {
+    message:"Chunks verified and file assembled successfully.",
+    transfer:publicTransfer(completed),
+    sha256:digest,
+    shareUrl:completed.share_token?config.publicBaseUrl+"/share/"+completed.share_token:null
+   };
+  }catch(error){
+   await unlink(destination).catch(()=>undefined);
+   if(error instanceof Error&&error.message.includes("failed integrity verification")){
+    return reply.code(422).send({error:error.message});
+   }
+   throw error;
+  }
+ });
+
+ // Abandon an unfinished upload and remove its temporary chunks.
+ app.delete<{Params:{id:string}}>("/transfers/:id/chunks",async(request,reply)=>{
+  const user=await requireUser(request,reply);if(!user)return;
+  const transfer=await ownedTransfer(request.params.id,user.id);
+  if(!transfer)return reply.code(404).send({error:"Transfer not found."});
+  if(transfer.status==="completed")return reply.code(409).send({error:"A completed transfer cannot be cancelled."});
+  const parts=await query<{storage_path:string}>("SELECT storage_path FROM transfer_chunks WHERE transfer_id=$1",[transfer.id]);
+  await query("DELETE FROM transfer_chunks WHERE transfer_id=$1",[transfer.id]);
+  await query("UPDATE transfers SET status='cancelled' WHERE id=$1 AND user_id=$2 AND status='pending'",[transfer.id,user.id]);
+  for(const part of parts.rows)await unlink(part.storage_path).catch(()=>undefined);
+  await fs.promises.rm(path.join(config.storageDir,"chunks",transfer.id),{recursive:true,force:true}).catch(()=>undefined);
+  return {message:"Upload cancelled and temporary chunks removed."};
+ });
+
+
  app.get("/transfers",async(request,reply)=>{
   const user=await requireUser(request,reply);if(!user)return;
   await query("UPDATE transfers SET status='expired' WHERE user_id=$1 AND expires_at<=NOW() AND status IN ('pending','completed')",[user.id]);
@@ -135,6 +357,8 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
   const transfer=await ownedTransfer(request.params.id,user.id);
   if(!transfer)return reply.code(404).send({error:"Transfer not found."});
   if(transfer.status!=="pending")return reply.code(409).send({error:"This transfer is not pending."});
+  const chunked=await query<{chunk_count:number|null}>("SELECT chunk_count FROM transfers WHERE id=$1",[transfer.id]);
+  if(chunked.rows[0]?.chunk_count)return reply.code(409).send({error:"This transfer uses the chunked upload endpoint."});
   if(transfer.expires_at&&new Date(transfer.expires_at)<new Date())return reply.code(410).send({error:"This transfer has expired."});
   const part=await request.file({limits:{fileSize:config.maxFileSizeBytes,files:1}});
   if(!part)return reply.code(400).send({error:"Attach a file using the multipart field name 'file'."});
@@ -151,8 +375,8 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
    const stat=await fs.promises.stat(destination);
    const token=randomUUID();
    const updated=await query<TransferRow>(
-    "UPDATE transfers SET filename=$3,filesize=$4,storage_path=$5,mime_type=$6,uploaded_at=NOW(),status='completed',share_token=CASE WHEN recipient_user_id IS NULL THEN $7::uuid ELSE NULL::uuid END WHERE id=$1 AND user_id=$2 AND status='pending' RETURNING *",
-    [transfer.id,user.id,name,stat.size,destination,part.mimetype,token]
+    "UPDATE transfers SET filename=$3,filesize=$4,storage_path=$5,mime_type=$6,sha256=$7,uploaded_at=NOW(),status='completed',share_token=CASE WHEN recipient_user_id IS NULL THEN $8::uuid ELSE NULL::uuid END WHERE id=$1 AND user_id=$2 AND status='pending' RETURNING *",
+    [transfer.id,user.id,name,stat.size,destination,part.mimetype,createHash("sha256").update(await fs.promises.readFile(destination)).digest("hex"),token]
    );
    if(!updated.rows[0]){
     await unlink(destination).catch(()=>undefined);
