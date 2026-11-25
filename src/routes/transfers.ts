@@ -314,9 +314,9 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
   const transfer=await ownedTransfer(request.params.id,user.id);
   if(!transfer)return reply.code(404).send({error:"Transfer not found."});
   if(transfer.status==="completed")return reply.code(409).send({error:"A completed transfer cannot be cancelled."});
+  await query("UPDATE transfers SET status='cancelled' WHERE id=$1 AND user_id=$2 AND status='pending'",[transfer.id,user.id]);
   const parts=await query<{storage_path:string}>("SELECT storage_path FROM transfer_chunks WHERE transfer_id=$1",[transfer.id]);
   await query("DELETE FROM transfer_chunks WHERE transfer_id=$1",[transfer.id]);
-  await query("UPDATE transfers SET status='cancelled' WHERE id=$1 AND user_id=$2 AND status='pending'",[transfer.id,user.id]);
   for(const part of parts.rows)await unlink(part.storage_path).catch(()=>undefined);
   await fs.promises.rm(path.join(config.storageDir,"chunks",transfer.id),{recursive:true,force:true}).catch(()=>undefined);
   return {message:"Upload cancelled and temporary chunks removed."};
