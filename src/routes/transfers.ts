@@ -91,7 +91,7 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
 
   let recipientId:string|null=null;
   if(recipientEmail){
-   if(recipientEmail.length>254||!/^[^@ ]+@[^@ ]+[.][^@ ]+$.test(recipientEmail)){
+   if(recipientEmail.length>254||!/^[^@ ]+@[^@ ]+[.][^@ ]+$/.test(recipientEmail)){
     return reply.code(400).send({error:"Enter a valid recipient email address."});
    }
    if(recipientEmail===user.email.toLowerCase()){
