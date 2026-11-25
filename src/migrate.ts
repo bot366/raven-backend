@@ -13,6 +13,8 @@ ALTER TABLE transfers ADD COLUMN IF NOT EXISTS uploaded_at TIMESTAMPTZ;
 ALTER TABLE transfers ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
 ALTER TABLE transfers ADD COLUMN IF NOT EXISTS share_token UUID;
 ALTER TABLE transfers ADD COLUMN IF NOT EXISTS sha256 TEXT;
+ALTER TABLE transfers ADD COLUMN IF NOT EXISTS chunk_size INTEGER;
+ALTER TABLE transfers ADD COLUMN IF NOT EXISTS chunk_count INTEGER;
 CREATE UNIQUE INDEX IF NOT EXISTS transfers_share_token_unique ON transfers(share_token) WHERE share_token IS NOT NULL;
 CREATE INDEX IF NOT EXISTS transfers_expires_at_idx ON transfers(expires_at);
 
