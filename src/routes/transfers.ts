@@ -19,7 +19,8 @@ function publicTransfer(row:TransferRow){
  return {
   id:row.id,filename:row.filename,filesize:Number(row.filesize),status:row.status,
   createdAt:row.created_at,uploadedAt:row.uploaded_at,expiresAt:row.expires_at,
-  downloadUrl:row.status==="completed"?config.publicBaseUrl+"/transfers/"+row.id+"/download":null
+  downloadUrl:row.status==="completed"?config.publicBaseUrl+"/transfers/"+row.id+"/download":null,
+  shareUrl:row.share_token?config.publicBaseUrl+"/share/"+row.share_token:null
  };
 }
 
