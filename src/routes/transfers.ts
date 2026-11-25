@@ -273,6 +273,14 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
   }catch(error){
    await unlink(destination).catch(()=>undefined);
    if(error instanceof Error&&error.message.includes("failed integrity verification")){
+    const match=error.message.match(/Stored chunk (\\d+) failed integrity verification/);
+    if(match){
+     const corruptIndex=Number(match[1]);
+     const corruptPart=parts.rows.find(part=>part.chunk_index===corruptIndex);
+     await query("DELETE FROM transfer_chunks WHERE transfer_id=$1 AND chunk_index=$2",[transfer.id,corruptIndex]);
+     if(corruptPart)await unlink(corruptPart.storage_path).catch(()=>undefined);
+     return reply.code(422).send({error:error.message,chunkIndex:corruptIndex,retryable:true});
+    }
     return reply.code(422).send({error:error.message});
    }
    throw error;
