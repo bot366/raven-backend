@@ -23,9 +23,9 @@ export async function getAuthenticatedUser(token?: string): Promise<AuthUser | n
     email_verified: boolean;
     avatar_path: string | null;
   }>(
-    \`SELECT u.id,u.display_name,u.username,u.email,u.email_verified,u.avatar_path
+    `SELECT u.id,u.display_name,u.username,u.email,u.email_verified,u.avatar_path
      FROM sessions s JOIN users u ON u.id=s.user_id
-     WHERE s.token_hash=$1 AND s.expires_at>NOW() LIMIT 1\`,
+     WHERE s.token_hash=$1 AND s.expires_at>NOW() LIMIT 1`,
     [hashSessionToken(token)]
   );
   const user = result.rows[0];
