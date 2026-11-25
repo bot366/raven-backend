@@ -107,10 +107,12 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
    "SELECT chunk_index,chunk_size,sha256 FROM transfer_chunks WHERE transfer_id=$1 ORDER BY chunk_index",
    [transfer.id]
   );
+  const validReceived=[] as typeof received.rows;
+  for(const chunk of received.rows){if(fs.existsSync(chunk.storage_path))validReceived.push(chunk);else await query("DELETE FROM transfer_chunks WHERE transfer_id=$1 AND chunk_index=$2",[transfer.id,chunk.chunk_index]);}
   return {
    transferId:transfer.id,chunkSize:transfer.chunk_size,chunkCount:transfer.chunk_count,
-   receivedChunks:received.rows,
-   receivedBytes:received.rows.reduce((total,row)=>total+Number(row.chunk_size),0)
+   receivedChunks:validReceived.map(({chunk_index,chunk_size,sha256})=>({chunk_index,chunk_size,sha256})),
+   receivedBytes:validReceived.reduce((total,row)=>total+Number(row.chunk_size),0)
   };
  });
 
@@ -376,7 +378,7 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
    const token=randomUUID();
    const updated=await query<TransferRow>(
     "UPDATE transfers SET filename=$3,filesize=$4,storage_path=$5,mime_type=$6,sha256=$7,uploaded_at=NOW(),status='completed',share_token=CASE WHEN recipient_user_id IS NULL THEN $8::uuid ELSE NULL::uuid END WHERE id=$1 AND user_id=$2 AND status='pending' RETURNING *",
-    [transfer.id,user.id,name,stat.size,destination,part.mimetype,createHash("sha256").update(await fs.promises.readFile(destination)).digest("hex"),token]
+    [transfer.id,user.id,name,stat.size,destination,part.mimetype,await hashFile(destination),token]
    );
    if(!updated.rows[0]){
     await unlink(destination).catch(()=>undefined);
