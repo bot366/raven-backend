@@ -151,7 +151,7 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
    const stat=await fs.promises.stat(destination);
    const token=randomUUID();
    const updated=await query<TransferRow>(
-    "UPDATE transfers SET filename=$3,filesize=$4,storage_path=$5,mime_type=$6,uploaded_at=NOW(),status='completed',share_token=$7 WHERE id=$1 AND user_id=$2 AND status='pending' RETURNING *",
+    "UPDATE transfers SET filename=$3,filesize=$4,storage_path=$5,mime_type=$6,uploaded_at=NOW(),status='completed',share_token=CASE WHEN recipient_user_id IS NULL THEN $7 ELSE NULL END WHERE id=$1 AND user_id=$2 AND status='pending' RETURNING *",
     [transfer.id,user.id,name,stat.size,destination,part.mimetype,token]
    );
    if(!updated.rows[0]){
