@@ -7,11 +7,14 @@ const API = (import.meta.env.VITE_API_URL || "https://raven-backend-qg3w.onrende
 const MAX_MB = Number(import.meta.env.VITE_MAX_FILE_SIZE_MB || 100);
 
 async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const isForm = options.body instanceof FormData;
+  const headers = new Headers(options.headers);
+  if (!(options.body instanceof FormData) && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
   const response = await fetch(API + path, {
     ...options,
     credentials: "include",
-    headers: { ...(isForm ? {} : { "Content-Type": "application/json" }), ...options.headers }
+    headers
   });
   const body = await response.json().catch(() => null) as (T & { error?: string }) | null;
   if (!response.ok) throw new Error(body?.error || "Request failed (" + response.status + ").");
