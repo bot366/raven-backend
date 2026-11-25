@@ -5,6 +5,7 @@ type User = {
   displayName: string;
   username: string | null;
   email: string;
+  emailVerified: boolean;
   hasAvatar?: boolean;
 };
 type Transfer = {
@@ -92,6 +93,8 @@ function App() {
   const [pageError, setPageError] = useState("");
   const [avatarUrl, setAvatarUrl] = useState("");
   const [usernameSetup, setUsernameSetup] = useState(false);
+  const [verificationNotice, setVerificationNotice] = useState("");
+  const [verificationError, setVerificationError] = useState("");
 
   const refreshHealth = useCallback(async () => {
     try {
@@ -101,7 +104,7 @@ function App() {
     } catch { setHealth("offline"); }
   }, []);
   const refreshTransfers = useCallback(async () => {
-    if (!user) return;
+    if (!user || !user.emailVerified) return;
     setLoadingTransfers(true);
     try {
       const [sentData, receivedData] = await Promise.all([
@@ -118,15 +121,49 @@ function App() {
 
   useEffect(() => {
     void refreshHealth();
-    api<{ user: User }>("/auth/me")
-      .then((data) => setUser(data.user))
-      .catch(() => setUser(null))
-      .finally(() => setChecking(false));
+    let active = true;
+    const loadSession = async () => {
+      const token = new URLSearchParams(window.location.hash.replace(/^#/, "")).get("verify");
+      if (token) {
+        try {
+          const result = await api<{ user: User; message: string }>("/auth/verify-email", {
+            method: "POST",
+            body: JSON.stringify({ token })
+          });
+          if (active) {
+            setUser(result.user);
+            setVerificationNotice(result.message);
+            setVerificationError("");
+          }
+        } catch (error) {
+          if (active) setVerificationError(error instanceof Error ? error.message : "Could not verify this email link.");
+          try {
+            const current = await api<{ user: User }>("/auth/me");
+            if (active) setUser(current.user);
+          } catch {
+            if (active) setUser(null);
+          }
+        } finally {
+          window.history.replaceState({}, document.title, window.location.pathname + window.location.search);
+        }
+      } else {
+        try {
+          const current = await api<{ user: User }>("/auth/me");
+          if (active) setUser(current.user);
+        } catch {
+          if (active) setUser(null);
+        }
+      }
+      if (active) setChecking(false);
+    };
+    void loadSession();
+    return () => { active = false; };
   }, [refreshHealth]);
   useEffect(() => {
     if (user) {
       setUsernameSetup(!user.username);
-      void refreshTransfers();
+      if (user.emailVerified) void refreshTransfers();
+      else { setTransfers([]); setReceived([]); }
       void (async () => {
         try {
           const response = await fetch(API + "/profile/avatar", { credentials: "include" });
@@ -156,10 +193,17 @@ function App() {
       password: String(form.get("password") || "")
     };
     try {
-      const result = await api<{ user: User }>(mode === "register" ? "/auth/register" : "/auth/login", {
+      const result = await api<{ user: User; verificationEmailSent?: boolean; message?: string }>(mode === "register" ? "/auth/register" : "/auth/login", {
         method: "POST", body: JSON.stringify(mode === "register" ? payload : { identifier: payload.identifier, password: payload.password })
       });
       setUser(result.user);
+      if (!result.user.emailVerified) {
+        setVerificationNotice(result.message || (result.verificationEmailSent === false
+          ? "Your account was created, but RAVEN could not send the verification email yet."
+          : "Verify your email address before sending or receiving files."));
+      } else {
+        setVerificationNotice("");
+      }
       setPage("overview");
     } catch (error) {
       setAuthError(error instanceof Error ? error.message : "Unable to sign in.");
@@ -213,7 +257,8 @@ function App() {
               <label>Email address<input name="email" type="email" maxLength={254} autoComplete="email" placeholder="you@example.com" required /></label>
             </> : <label>Email or username<input name="identifier" type="text" maxLength={254} autoComplete="username" placeholder="you@example.com or @username" required /></label>}
             <label>Password<input name="password" type="password" minLength={8} maxLength={128} autoComplete={mode === "login" ? "current-password" : "new-password"} placeholder="At least 8 characters" required /></label>
-            {authError && <div className="form-alert" role="alert">{authError}</div>}
+            {verificationError && <div className="form-alert" role="alert">{verificationError}</div>}
+          {authError && <div className="form-alert" role="alert">{authError}</div>}
             <button className="primary-button" type="submit" disabled={authBusy}>{authBusy ? "Please wait…" : mode === "login" ? "Log in to RAVEN" : "Create account"} <Icon name="send"/></button>
           </form>
           <p className="auth-switch">{mode === "login" ? "New to RAVEN?" : "Already have an account?"} <button type="button" onClick={() => { setMode(mode === "login" ? "register" : "login"); setAuthError(""); }}>{mode === "login" ? "Create an account" : "Log in"}</button></p>
@@ -223,6 +268,16 @@ function App() {
       <footer className="auth-footer"><span>RAVEN / File sharing, simplified.</span><span className={"api-indicator api-" + health}><i/>{health === "online" ? "API operational" : health === "checking" ? "Checking API" : "API unavailable"}</span></footer>
     </div>
   );
+
+  if (user && !user.emailVerified) {
+    return <EmailVerificationGate
+      user={user}
+      initialMessage={verificationNotice}
+      initialError={verificationError}
+      onUser={setUser}
+      onLogout={() => void logout()}
+    />;
+  }
 
   const sentCompleted = transfers.filter((item) => item.status === "completed");
   const sharedLinks = sentCompleted.filter((item) => item.shareUrl);
