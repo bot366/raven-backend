@@ -8,6 +8,8 @@ RAVEN is a React + TypeScript file-sharing application backed by Fastify, Neon P
 - Database: Neon PostgreSQL
 - Authentication: Argon2id password hashes and opaque server-side sessions in Secure, HttpOnly cookies
 - Transfers: each transfer is owned by its creating account; public share-token downloads remain available to anyone holding the link until expiry.
+- Profiles: unique usernames, username/email recipient lookup, generated initials avatars, and optional profile photos.
+- Dashboard: responsive overview, sent/received files, shared links, profile settings, and a small animated 2D raven during uploads.
 
 ## Deploy the backend
 - Root directory: repository root
@@ -20,7 +22,25 @@ RAVEN is a React + TypeScript file-sharing application backed by Fastify, Neon P
   - `MAX_FILE_SIZE_MB`: upload limit (default 100)
   - `TRANSFER_EXPIRY_HOURS`: transfer lifetime (default 24)
   - `STORAGE_DIR`: local storage directory (temporary only on ephemeral hosting)
-- Run `npm run db:migrate` once after deploying the new API code and before enabling the new frontend.
+- Run `npm run db:migrate` once after deploying the new API code and before enabling the new frontend. If the Render service has no Shell, run the SQL shown in the `Database update` section using the Neon SQL Editor.
+
+## Database update
+
+The migration adds nullable usernames for existing accounts and avatar metadata. New signups must choose a username. Existing users are prompted to choose one after logging in.
+
+Run this in the Neon SQL Editor for `raven_db` before testing the new frontend:
+
+```sql
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS username TEXT;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS avatar_path TEXT;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS avatar_mime_type TEXT;
+
+CREATE UNIQUE INDEX IF NOT EXISTS users_username_unique
+  ON public.users (LOWER(username))
+  WHERE username IS NOT NULL;
+```
+
+The backend migration script contains the same changes and is safe to rerun.
 
 ## Deploy the frontend
 - Root directory: `frontend/raven-frontend`
@@ -32,16 +52,18 @@ RAVEN is a React + TypeScript file-sharing application backed by Fastify, Neon P
 
 ## API routes
 - `GET /health`
-- `POST /auth/register`, `POST /auth/login`, `POST /auth/logout`, `GET /auth/me`
+- `POST /auth/register`, `POST /auth/login` (email or username), `POST /auth/logout`, `GET /auth/me`
+- `PUT /profile/username`, `PUT /profile/avatar`, `GET /profile/avatar`
+- `GET /users/lookup?identifier=...`: authenticated username/email recipient lookup
 - `GET /transfers`: authenticated user's latest 100 sent transfers
 - `GET /transfers/received`: authenticated user's latest 100 files sent directly to their RAVEN account
-- `POST /transfers`, `POST /transfers/:id/upload`: authenticated; include optional `recipientEmail` when creating a direct account-to-account transfer
+- `POST /transfers`, `POST /transfers/:id/upload`: authenticated; include optional `recipientIdentifier` (username or email) when creating a direct account-to-account transfer
 - `GET /transfers/:id`, `GET /transfers/:id/download`: authenticated sender or designated recipient
 - `GET /share/:token`: public token-based download
 
 ## Security and storage notes
 The API requires exact CORS origins and uses credentialed requests with Secure, HttpOnly, SameSite=None session cookies. The browser includes credentials with frontend API calls. State-changing browser requests are checked against the allowed Origin list. Do not use wildcard CORS.
 
-The current file store writes to the service's local filesystem. Render filesystems are ephemeral unless a persistent disk is configured. Files can be lost during restarts or deploys. This is only suitable for temporary testing; configure a persistent disk or S3-compatible object storage before storing important files.
+The current file store writes to the service's local filesystem. Render filesystems are ephemeral unless a persistent disk is configured. Uploaded files and profile photos can be lost during restarts or deploys. This is only suitable for temporary testing; configure a persistent disk or S3-compatible object storage before storing important files.
 
 Never commit `.env`, database credentials, API keys, session cookies, or uploaded files.
