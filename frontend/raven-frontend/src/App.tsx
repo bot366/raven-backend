@@ -95,6 +95,7 @@ function App() {
   const [usernameSetup, setUsernameSetup] = useState(false);
   const [verificationNotice, setVerificationNotice] = useState("");
   const [verificationError, setVerificationError] = useState("");
+  const [pendingVerificationToken, setPendingVerificationToken] = useState("");
 
   const refreshHealth = useCallback(async () => {
     try {
@@ -125,34 +126,14 @@ function App() {
     const loadSession = async () => {
       const token = new URLSearchParams(window.location.hash.replace(/^#/, "")).get("verify");
       if (token) {
-        try {
-          const result = await api<{ user: User; message: string }>("/auth/verify-email", {
-            method: "POST",
-            body: JSON.stringify({ token })
-          });
-          if (active) {
-            setUser(result.user);
-            setVerificationNotice(result.message);
-            setVerificationError("");
-          }
-        } catch (error) {
-          if (active) setVerificationError(error instanceof Error ? error.message : "Could not verify this email link.");
-          try {
-            const current = await api<{ user: User }>("/auth/me");
-            if (active) setUser(current.user);
-          } catch {
-            if (active) setUser(null);
-          }
-        } finally {
-          window.history.replaceState({}, document.title, window.location.pathname + window.location.search);
-        }
-      } else {
-        try {
-          const current = await api<{ user: User }>("/auth/me");
-          if (active) setUser(current.user);
-        } catch {
-          if (active) setUser(null);
-        }
+        if (active) setPendingVerificationToken(token);
+        window.history.replaceState({}, document.title, window.location.pathname + window.location.search);
+      }
+      try {
+        const current = await api<{ user: User }>("/auth/me");
+        if (active) setUser(current.user);
+      } catch {
+        if (active) setUser(null);
       }
       if (active) setChecking(false);
     };
@@ -269,6 +250,19 @@ function App() {
     </div>
   );
 
+  if (pendingVerificationToken) {
+    return <EmailLinkConfirmation
+      token={pendingVerificationToken}
+      onVerified={(verifiedUser) => {
+        setUser(verifiedUser);
+        setPendingVerificationToken("");
+        setVerificationNotice("Your email address has been verified.");
+        setVerificationError("");
+      }}
+      onCancel={() => setPendingVerificationToken("")}
+    />;
+  }
+
   if (user && !user.emailVerified) {
     return <EmailVerificationGate
       user={user}
@@ -358,6 +352,43 @@ function App() {
       {sendOpen && <SendModal onClose={() => setSendOpen(false)} onComplete={async () => { await refreshTransfers(); }} />}
     </div>
   );
+}
+
+function EmailLinkConfirmation({ token, onVerified, onCancel }: {
+  token: string;
+  onVerified: (user: User) => void;
+  onCancel: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const confirm = async () => {
+    setBusy(true); setError("");
+    try {
+      const result = await api<{ user: User }>("/auth/verify-email", {
+        method: "POST",
+        body: JSON.stringify({ token })
+      });
+      onVerified(result.user);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "This verification link could not be used.");
+    } finally { setBusy(false); }
+  };
+  return <div className="auth-shell">
+    <header className="auth-topbar"><a className="brand" href="#"><span className="brand-mark"><RavenMark /></span>RAVEN</a></header>
+    <main className="verification-confirm-main">
+      <section className="auth-card verification-confirm-card">
+        <div className="verification-icon"><Icon name="check"/></div>
+        <p className="section-kicker">EMAIL VERIFICATION</p>
+        <h2>Confirm your email address</h2>
+        <p className="verification-copy">Click below to confirm that you own this email address and unlock RAVEN file transfers.</p>
+        {error && <div className="form-alert" role="alert">{error}</div>}
+        <button className="primary-button verification-resend" type="button" onClick={() => void confirm()} disabled={busy}>
+          {busy ? "Verifying…" : "Verify email address"}
+        </button>
+        <button className="text-button verification-cancel" type="button" onClick={onCancel} disabled={busy}>Return to RAVEN sign in</button>
+      </section>
+    </main>
+  </div>;
 }
 
 function EmailVerificationGate({ user, initialMessage, initialError, onUser, onLogout }: {
