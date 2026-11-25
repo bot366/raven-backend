@@ -161,7 +161,7 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
    return reply.code(201).send({
     message:"File uploaded successfully.",
     transfer:publicTransfer(updated.rows[0]),
-    shareUrl:config.publicBaseUrl+"/share/"+token
+    shareUrl:updated.rows[0].share_token?config.publicBaseUrl+"/share/"+updated.rows[0].share_token:null
    });
   }catch(error){
    await unlink(destination).catch(()=>undefined);
