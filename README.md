@@ -6,7 +6,7 @@ RAVEN is a React + TypeScript file-sharing application backed by Fastify, Neon P
 - Frontend: Vite static site on Render
 - API: Fastify web service on Render
 - Database: Neon PostgreSQL
-- Authentication: Argon2id password hashes and opaque server-side sessions in Secure, HttpOnly cookies
+- Authentication: Argon2id password hashes, opaque server-side sessions in Secure, HttpOnly cookies, and email ownership verification before transfers
 - Transfers: each transfer is owned by its creating account; public share-token downloads remain available to anyone holding the link until expiry.
 - Profiles: unique usernames, username/email recipient lookup, generated initials avatars, and optional profile photos.
 - Dashboard: responsive overview, sent/received files, shared links, profile settings, and a small animated 2D raven during uploads.
@@ -22,11 +22,14 @@ RAVEN is a React + TypeScript file-sharing application backed by Fastify, Neon P
   - `MAX_FILE_SIZE_MB`: upload limit (default 100)
   - `TRANSFER_EXPIRY_HOURS`: transfer lifetime (default 24)
   - `STORAGE_DIR`: local storage directory (temporary only on ephemeral hosting)
+  - `RESEND_API_KEY`: Resend sending API key (keep this secret on the backend only)
+  - `EMAIL_FROM`: sender address on a verified Resend domain, e.g. `RAVEN <verify@example.com>`
+  - `FRONTEND_BASE_URL`: deployed frontend origin used to build verification links
 - Run `npm run db:migrate` once after deploying the new API code and before enabling the new frontend. If the Render service has no Shell, run the SQL shown in the `Database update` section using the Neon SQL Editor.
 
 ## Database update
 
-The migration adds nullable usernames for existing accounts and avatar metadata. New signups must choose a username. Existing users are prompted to choose one after logging in.
+The migration adds nullable usernames for existing accounts, avatar metadata, an `email_verified` flag, and hashed one-time email verification tokens. Existing accounts become unverified by default and must verify their current email or change it to a correct address. New accounts must verify before using file transfers.
 
 Run this in the Neon SQL Editor for `raven_db` before testing the new frontend:
 
@@ -38,6 +41,21 @@ ALTER TABLE public.users ADD COLUMN IF NOT EXISTS avatar_mime_type TEXT;
 CREATE UNIQUE INDEX IF NOT EXISTS users_username_unique
   ON public.users (LOWER(username))
   WHERE username IS NOT NULL;
+
+ALTER TABLE public.users
+  ADD COLUMN IF NOT EXISTS email_verified BOOLEAN NOT NULL DEFAULT FALSE;
+
+CREATE TABLE IF NOT EXISTS public.email_verification_tokens (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL UNIQUE,
+  expires_at TIMESTAMPTZ NOT NULL,
+  used_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS email_verification_tokens_user_created_idx
+  ON public.email_verification_tokens(user_id, created_at DESC);
 
 ALTER TABLE public.transfers ADD COLUMN IF NOT EXISTS sha256 TEXT;
 ALTER TABLE public.transfers ADD COLUMN IF NOT EXISTS chunk_size INTEGER;
@@ -70,6 +88,7 @@ The backend migration script contains the same changes and is safe to rerun.
 ## API routes
 - `GET /health`
 - `POST /auth/register`, `POST /auth/login` (email or username), `POST /auth/logout`, `GET /auth/me`
+- `POST /auth/verify-email`, `POST /auth/resend-verification`, `POST /auth/change-email`
 - `PUT /profile/username`, `PUT /profile/avatar`, `GET /profile/avatar`
 - `GET /users/lookup?identifier=...`: authenticated username/email recipient lookup
 - `GET /transfers`: authenticated user's latest 100 sent transfers
@@ -82,6 +101,10 @@ The backend migration script contains the same changes and is safe to rerun.
 ## Chunked uploads
 
 The frontend sends 8 MiB chunks with up to three concurrent requests. Each chunk includes a SHA-256 digest in the `X-Chunk-Sha256` header; the backend verifies the digest and exact expected byte length before accepting it. Repeated identical chunk submissions are idempotent. Completion rechecks each stored chunk, assembles chunks in order, calculates a final SHA-256 digest, and only then marks the transfer complete. A failed upload can be retried in the same browser session and already-received chunks are skipped. The chunk manifest is stored in Neon, but chunk bytes are stored in the backend's local filesystem, so resuming after a Render restart is not guaranteed.
+
+## Email verification
+
+New accounts receive a one-time verification link that expires after 30 minutes. Existing accounts are also marked unverified by the migration. Unverified users may sign in, resend the verification message, or change their email after confirming their current password, but transfer creation, recipient lookup, chunk uploads, transfer downloads, and public share-link downloads are blocked until verification succeeds. Verification email is sent by the backend through Resend. Set `RESEND_API_KEY`, `EMAIL_FROM`, and `FRONTEND_BASE_URL` in the Render backend environment before deploying this change. Add and verify a sending domain in Resend first; the sender address must belong to that verified domain. Never expose the Resend key through a `VITE_` frontend variable.
 
 ## Security and storage notes
 The API requires exact CORS origins and uses credentialed requests with Secure, HttpOnly, SameSite=None session cookies. The browser includes credentials with frontend API calls. State-changing browser requests are checked against the allowed Origin list. Do not use wildcard CORS.

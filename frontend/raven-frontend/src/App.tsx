@@ -5,6 +5,7 @@ type User = {
   displayName: string;
   username: string | null;
   email: string;
+  emailVerified: boolean;
   hasAvatar?: boolean;
 };
 type Transfer = {
@@ -92,6 +93,9 @@ function App() {
   const [pageError, setPageError] = useState("");
   const [avatarUrl, setAvatarUrl] = useState("");
   const [usernameSetup, setUsernameSetup] = useState(false);
+  const [verificationNotice, setVerificationNotice] = useState("");
+  const [verificationError, setVerificationError] = useState("");
+  const [pendingVerificationToken, setPendingVerificationToken] = useState("");
 
   const refreshHealth = useCallback(async () => {
     try {
@@ -101,7 +105,7 @@ function App() {
     } catch { setHealth("offline"); }
   }, []);
   const refreshTransfers = useCallback(async () => {
-    if (!user) return;
+    if (!user || !user.emailVerified) return;
     setLoadingTransfers(true);
     try {
       const [sentData, receivedData] = await Promise.all([
@@ -118,15 +122,29 @@ function App() {
 
   useEffect(() => {
     void refreshHealth();
-    api<{ user: User }>("/auth/me")
-      .then((data) => setUser(data.user))
-      .catch(() => setUser(null))
-      .finally(() => setChecking(false));
+    let active = true;
+    const loadSession = async () => {
+      const token = new URLSearchParams(window.location.hash.replace(/^#/, "")).get("verify");
+      if (token) {
+        if (active) setPendingVerificationToken(token);
+        window.history.replaceState({}, document.title, window.location.pathname + window.location.search);
+      }
+      try {
+        const current = await api<{ user: User }>("/auth/me");
+        if (active) setUser(current.user);
+      } catch {
+        if (active) setUser(null);
+      }
+      if (active) setChecking(false);
+    };
+    void loadSession();
+    return () => { active = false; };
   }, [refreshHealth]);
   useEffect(() => {
     if (user) {
       setUsernameSetup(!user.username);
-      void refreshTransfers();
+      if (user.emailVerified) void refreshTransfers();
+      else { setTransfers([]); setReceived([]); }
       void (async () => {
         try {
           const response = await fetch(API + "/profile/avatar", { credentials: "include" });
@@ -156,10 +174,17 @@ function App() {
       password: String(form.get("password") || "")
     };
     try {
-      const result = await api<{ user: User }>(mode === "register" ? "/auth/register" : "/auth/login", {
+      const result = await api<{ user: User; verificationEmailSent?: boolean; message?: string }>(mode === "register" ? "/auth/register" : "/auth/login", {
         method: "POST", body: JSON.stringify(mode === "register" ? payload : { identifier: payload.identifier, password: payload.password })
       });
       setUser(result.user);
+      if (!result.user.emailVerified) {
+        setVerificationNotice(result.message || (result.verificationEmailSent === false
+          ? "Your account was created, but RAVEN could not send the verification email yet."
+          : "Verify your email address before sending or receiving files."));
+      } else {
+        setVerificationNotice("");
+      }
       setPage("overview");
     } catch (error) {
       setAuthError(error instanceof Error ? error.message : "Unable to sign in.");
@@ -213,7 +238,8 @@ function App() {
               <label>Email address<input name="email" type="email" maxLength={254} autoComplete="email" placeholder="you@example.com" required /></label>
             </> : <label>Email or username<input name="identifier" type="text" maxLength={254} autoComplete="username" placeholder="you@example.com or @username" required /></label>}
             <label>Password<input name="password" type="password" minLength={8} maxLength={128} autoComplete={mode === "login" ? "current-password" : "new-password"} placeholder="At least 8 characters" required /></label>
-            {authError && <div className="form-alert" role="alert">{authError}</div>}
+            {verificationError && <div className="form-alert" role="alert">{verificationError}</div>}
+          {authError && <div className="form-alert" role="alert">{authError}</div>}
             <button className="primary-button" type="submit" disabled={authBusy}>{authBusy ? "Please wait…" : mode === "login" ? "Log in to RAVEN" : "Create account"} <Icon name="send"/></button>
           </form>
           <p className="auth-switch">{mode === "login" ? "New to RAVEN?" : "Already have an account?"} <button type="button" onClick={() => { setMode(mode === "login" ? "register" : "login"); setAuthError(""); }}>{mode === "login" ? "Create an account" : "Log in"}</button></p>
@@ -223,6 +249,29 @@ function App() {
       <footer className="auth-footer"><span>RAVEN / File sharing, simplified.</span><span className={"api-indicator api-" + health}><i/>{health === "online" ? "API operational" : health === "checking" ? "Checking API" : "API unavailable"}</span></footer>
     </div>
   );
+
+  if (pendingVerificationToken) {
+    return <EmailLinkConfirmation
+      token={pendingVerificationToken}
+      onVerified={(verifiedUser) => {
+        setUser(verifiedUser);
+        setPendingVerificationToken("");
+        setVerificationNotice("Your email address has been verified.");
+        setVerificationError("");
+      }}
+      onCancel={() => setPendingVerificationToken("")}
+    />;
+  }
+
+  if (user && !user.emailVerified) {
+    return <EmailVerificationGate
+      user={user}
+      initialMessage={verificationNotice}
+      initialError={verificationError}
+      onUser={setUser}
+      onLogout={() => void logout()}
+    />;
+  }
 
   const sentCompleted = transfers.filter((item) => item.status === "completed");
   const sharedLinks = sentCompleted.filter((item) => item.shareUrl);
@@ -303,6 +352,124 @@ function App() {
       {sendOpen && <SendModal onClose={() => setSendOpen(false)} onComplete={async () => { await refreshTransfers(); }} />}
     </div>
   );
+}
+
+function EmailLinkConfirmation({ token, onVerified, onCancel }: {
+  token: string;
+  onVerified: (user: User) => void;
+  onCancel: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const confirm = async () => {
+    setBusy(true); setError("");
+    try {
+      const result = await api<{ user: User }>("/auth/verify-email", {
+        method: "POST",
+        body: JSON.stringify({ token })
+      });
+      onVerified(result.user);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "This verification link could not be used.");
+    } finally { setBusy(false); }
+  };
+  return <div className="auth-shell">
+    <header className="auth-topbar"><a className="brand" href="#"><span className="brand-mark"><RavenMark /></span>RAVEN</a></header>
+    <main className="verification-confirm-main">
+      <section className="auth-card verification-confirm-card">
+        <div className="verification-icon"><Icon name="check"/></div>
+        <p className="section-kicker">EMAIL VERIFICATION</p>
+        <h2>Confirm your email address</h2>
+        <p className="verification-copy">Click below to confirm that you own this email address and unlock RAVEN file transfers.</p>
+        {error && <div className="form-alert" role="alert">{error}</div>}
+        <button className="primary-button verification-resend" type="button" onClick={() => void confirm()} disabled={busy}>
+          {busy ? "Verifying…" : "Verify email address"}
+        </button>
+        <button className="text-button verification-cancel" type="button" onClick={onCancel} disabled={busy}>Return to RAVEN sign in</button>
+      </section>
+    </main>
+  </div>;
+}
+
+function EmailVerificationGate({ user, initialMessage, initialError, onUser, onLogout }: {
+  user: User;
+  initialMessage: string;
+  initialError: string;
+  onUser: (user: User) => void;
+  onLogout: () => void;
+}) {
+  const [resendBusy, setResendBusy] = useState(false);
+  const [changeBusy, setChangeBusy] = useState(false);
+  const [email, setEmail] = useState(user.email);
+  const [password, setPassword] = useState("");
+  const [message, setMessage] = useState(initialMessage);
+  const [error, setError] = useState(initialError);
+  const resend = async () => {
+    setResendBusy(true); setError(""); setMessage("");
+    try {
+      const result = await api<{ message: string }>("/auth/resend-verification", { method: "POST", body: "{}" });
+      setMessage(result.message);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Could not send a verification email.");
+    } finally { setResendBusy(false); }
+  };
+  const changeEmail = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault(); setChangeBusy(true); setError(""); setMessage("");
+    try {
+      const result = await api<{ user: User; message: string }>("/auth/change-email", {
+        method: "POST",
+        body: JSON.stringify({ email, password })
+      });
+      onUser(result.user);
+      setEmail(result.user.email);
+      setPassword("");
+      setMessage(result.message);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Could not update your email address.");
+    } finally { setChangeBusy(false); }
+  };
+  return <div className="auth-shell">
+    <header className="auth-topbar">
+      <a className="brand" href="#"><span className="brand-mark"><RavenMark /></span>RAVEN</a>
+      <button className="text-button" type="button" onClick={onLogout}>Sign out</button>
+    </header>
+    <main className="verification-main">
+      <section className="auth-intro verification-intro">
+        <div className="eyebrow"><span className="eyebrow-line"/> ACCOUNT SECURITY</div>
+        <h1>One quick<br/><span>email check.</span></h1>
+        <p>Confirm that you own your email address. This helps RAVEN make sure files are delivered to the right accounts.</p>
+        <div className="auth-mascot"><DeliveryRaven/><span>Your raven is ready when you are.</span></div>
+      </section>
+      <section className="auth-card verification-card">
+        <div className="verification-icon"><Icon name="user"/></div>
+        <p className="section-kicker">VERIFY YOUR ACCOUNT</p>
+        <h2>Check your inbox</h2>
+        <p className="verification-copy">We sent a verification link to:</p>
+        <strong className="verification-email">{user.email}</strong>
+        <p className="verification-copy">Open the email and click the verification button. The link expires after 30 minutes.</p>
+        <div className="verification-lock-note"><Icon name="lock"/> Sending and receiving files are locked until your email is verified.</div>
+        {message && <div className="success-message verification-message"><Icon name="check"/>{message}</div>}
+        {error && <div className="form-alert" role="alert">{error}</div>}
+        <button className="primary-button verification-resend" type="button" onClick={() => void resend()} disabled={resendBusy}>
+          {resendBusy ? "Sending…" : "Resend verification email"}
+        </button>
+        <div className="verification-divider"><span/>OR<span/></div>
+        <form className="auth-form" onSubmit={(event) => void changeEmail(event)}>
+          <div className="verification-form-heading">
+            <strong>Used the wrong email?</strong>
+            <span>Change it here. We'll send a new verification link.</span>
+          </div>
+          <label>Correct email address<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} maxLength={254} autoComplete="email" placeholder="you@example.com" required/></label>
+          <label>Current password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} minLength={8} maxLength={128} autoComplete="current-password" placeholder="Confirm your password" required/></label>
+          <button className="outline-button verification-change" type="submit" disabled={changeBusy}>
+            {changeBusy ? "Updating…" : "Update email and resend link"}
+          </button>
+        </form>
+        <p className="verification-footnote">Didn't request a RAVEN account? Sign out and ignore the verification email.</p>
+      </section>
+    </main>
+    <footer className="auth-footer"><span>RAVEN / Account verification</span><span>Private file sharing</span></footer>
+  </div>;
 }
 
 function StatCard({ icon, label, value, note }: { icon: string; label: string; value: string; note: string }) {
@@ -566,7 +733,7 @@ function SendModal({ onClose, onComplete }: { onClose: () => void; onComplete: (
     <form className="dialog-card send-dialog" onSubmit={(event) => void send(event)}>
       <div className="dialog-heading"><div><span className="section-kicker">NEW DELIVERY</span><h2>Send a file</h2><p>Choose who should receive your file.</p></div><button className="icon-button close-dialog" type="button" onClick={dismiss} disabled={busy} aria-label="Close"><Icon name="close"/></button></div>
       <label className="field-label">Recipient <span className="optional-label">Optional for a share link</span><input value={recipient} onChange={(event) => { setRecipient(event.target.value); setRecipientMatch(null); setRecipientError(""); }} onBlur={() => { if (recipient.trim() && !transferId) void lookupRecipient(); }} placeholder="Email address or @username" disabled={busy || Boolean(transferId)}/></label>
-      {recipientMatch && <div className="recipient-confirm"><Avatar user={{ id: "recipient", displayName: recipientMatch.displayName, username: recipientMatch.username, email: "" }} size="small"/><div><strong>{recipientMatch.displayName}</strong><span>@{recipientMatch.username}</span></div><Icon name="check"/></div>}
+      {recipientMatch && <div className="recipient-confirm"><Avatar user={{ id: "recipient", displayName: recipientMatch.displayName, username: recipientMatch.username, email: "", emailVerified: true }} size="small"/><div><strong>{recipientMatch.displayName}</strong><span>@{recipientMatch.username}</span></div><Icon name="check"/></div>}
       {recipientError && <div className="form-alert">{recipientError}</div>}
       <div className="field-label">File to send
         <div className={"file-drop-zone" + (dragging ? " dragging" : "")} onDragEnter={(event) => { event.preventDefault(); setDragging(true); }} onDragOver={(event) => event.preventDefault()} onDragLeave={(event) => { event.preventDefault(); if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false); }} onDrop={onDrop} onClick={() => !busy && !transferId && fileInput.current?.click()} role="button" tabIndex={0} onKeyDown={(event) => { if ((event.key === "Enter" || event.key === " ") && !busy && !transferId) fileInput.current?.click(); }}>
