@@ -29,9 +29,12 @@ CREATE INDEX IF NOT EXISTS sessions_user_id_idx ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS sessions_expires_at_idx ON sessions(expires_at);
 CREATE INDEX IF NOT EXISTS transfers_user_id_created_at_idx ON transfers(user_id,created_at DESC);
 `;
+const client=await pool.connect();
 try{
- await pool.query("BEGIN"); await pool.query(sql); await pool.query("COMMIT");
- const result=await pool.query(`SELECT current_database() AS database,to_regclass('public.transfers') AS transfers_table,to_regclass('public.users') AS users_table,to_regclass('public.sessions') AS sessions_table`);
+ await client.query("BEGIN");
+ await client.query(sql);
+ await client.query("COMMIT");
+ const result=await client.query(`SELECT current_database() AS database,to_regclass('public.transfers') AS transfers_table,to_regclass('public.users') AS users_table,to_regclass('public.sessions') AS sessions_table`);
  console.log("RAVEN database migration completed:",result.rows[0]);
-}catch(error){await pool.query("ROLLBACK").catch(()=>undefined);console.error("Migration failed:",error);process.exitCode=1;}
-finally{await pool.end();}
+}catch(error){await client.query("ROLLBACK").catch(()=>undefined);console.error("Migration failed:",error);process.exitCode=1;}
+finally{client.release();await pool.end();}
