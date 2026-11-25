@@ -199,10 +199,14 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
     await query("DELETE FROM transfer_chunks WHERE transfer_id=$1 AND chunk_index=$2",[transfer.id,index]);
    }
    try{
-    await query(
-     "INSERT INTO transfer_chunks(transfer_id,chunk_index,chunk_size,sha256,storage_path) VALUES($1,$2,$3,$4,$5)",
-     [transfer.id,index,byteCount,actualHash,destination]
+    const inserted=await query(
+     "INSERT INTO transfer_chunks(transfer_id,chunk_index,chunk_size,sha256,storage_path) SELECT $1,$2,$3,$4,$5 WHERE EXISTS(SELECT 1 FROM transfers WHERE id=$1 AND user_id=$6 AND status='pending') RETURNING chunk_index",
+     [transfer.id,index,byteCount,actualHash,destination,user.id]
     );
+    if(!inserted.rows[0]){
+     await unlink(destination).catch(()=>undefined);
+     return reply.code(409).send({error:"This transfer was cancelled before the chunk could be saved."});
+    }
    }catch(error){
     await unlink(destination).catch(()=>undefined);
     if(typeof error==="object"&&error!==null&&"code" in error&&error.code==="23505"){
