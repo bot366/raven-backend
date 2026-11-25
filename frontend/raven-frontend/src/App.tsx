@@ -395,13 +395,23 @@ function SendModal({ onClose, onComplete }: { onClose: () => void; onComplete: (
   const [error, setError] = useState("");
   const [shareUrl, setShareUrl] = useState("");
   const [copied, setCopied] = useState(false);
+  const [transferId, setTransferId] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  const activeRequests = useRef<Set<XMLHttpRequest>>(new Set());
+  const cancelled = useRef(false);
+  const CHUNK_SIZE = 8 * 1024 * 1024;
+  const CONCURRENT_CHUNKS = 3;
+  const MAX_RETRIES = 3;
 
   const chooseFile = (file?: File) => {
     if (!file) return;
-    setError(""); setShareUrl("");
+    if (transferId) {
+      void api("/transfers/" + encodeURIComponent(transferId) + "/chunks", { method: "DELETE" }).catch(() => undefined);
+      setTransferId(null);
+    }
+    setError(""); setShareUrl(""); setDelivery("idle"); setProgress(0);
     if (file.size > MAX_MB * 1024 * 1024) { setSelected(null); setError("File exceeds the " + MAX_MB + " MB limit."); return; }
-    setSelected(file); setDelivery("idle"); setProgress(0);
+    setSelected(file);
   };
   const lookupRecipient = async () => {
     const value = recipient.trim();
@@ -416,42 +426,135 @@ function SendModal({ onClose, onComplete }: { onClose: () => void; onComplete: (
       return false;
     }
   };
+  const putChunk = (id: string, index: number, blob: Blob, digest: string, onProgress: (loaded: number) => void) =>
+    new Promise<void>((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      activeRequests.current.add(xhr);
+      const finish = () => activeRequests.current.delete(xhr);
+      xhr.open("PUT", API + "/transfers/" + encodeURIComponent(id) + "/chunks/" + index);
+      xhr.withCredentials = true;
+      xhr.setRequestHeader("X-Chunk-Sha256", digest);
+      xhr.upload.onprogress = (event) => { if (event.lengthComputable) onProgress(Math.min(blob.size, event.loaded)); };
+      xhr.onload = () => {
+        finish();
+        if (xhr.status >= 200 && xhr.status < 300) { resolve(); return; }
+        let message = "Chunk " + (index + 1) + " upload failed (" + xhr.status + ").";
+        try { const response = JSON.parse(xhr.responseText) as { error?: string }; if (response.error) message = response.error; } catch { /* keep fallback */ }
+        reject(new Error(message));
+      };
+      xhr.onerror = () => { finish(); reject(new Error("Network error while uploading chunk " + (index + 1) + ".")); };
+      xhr.onabort = () => { finish(); reject(new Error("Upload cancelled.")); };
+      const form = new FormData();
+      form.append("chunk", blob, "chunk-" + index + ".part");
+      xhr.send(form);
+    });
+  const dismiss = () => {
+    if (transferId) void api("/transfers/" + encodeURIComponent(transferId) + "/chunks", { method: "DELETE" }).catch(() => undefined);
+    onClose();
+  };
+  const cancelUpload = async () => {
+    cancelled.current = true;
+    for (const xhr of activeRequests.current) xhr.abort();
+    const id = transferId;
+    if (id) await api("/transfers/" + encodeURIComponent(id) + "/chunks", { method: "DELETE" }).catch(() => undefined);
+    setTransferId(null);
+    setBusy(false);
+    setDelivery("idle");
+    setProgress(0);
+    setError("Upload cancelled. Temporary chunks have been removed where available.");
+  };
   const send = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault(); if (!selected || busy) return;
+    event.preventDefault();
+    if (!selected || busy || delivery === "success") return;
     setError(""); setRecipientError(""); setShareUrl("");
-    if (recipient.trim()) {
+    if (!transferId && recipient.trim()) {
       const matched = await lookupRecipient();
       if (!matched) return;
     }
+    cancelled.current = false;
     setBusy(true); setDelivery("preparing"); setProgress(0);
     try {
-      const created = await api<{ transfer: { id: string } }>("/transfers", {
-        method: "POST",
-        body: JSON.stringify({ filename: selected.name, filesize: selected.size, recipientIdentifier: recipient.trim() || undefined })
-      });
+      let id = transferId;
+      if (!id) {
+        const created = await api<{ transfer: { id: string } }>("/transfers", {
+          method: "POST",
+          body: JSON.stringify({ filename: selected.name, filesize: selected.size, recipientIdentifier: recipient.trim() || undefined })
+        });
+        id = created.transfer.id;
+        setTransferId(id);
+        if (cancelled.current) {
+          await api("/transfers/" + encodeURIComponent(id) + "/chunks", { method: "DELETE" }).catch(() => undefined);
+          return;
+        }
+      }
+      const chunkCount = Math.max(1, Math.ceil(selected.size / CHUNK_SIZE));
+      const startData = await api<{ receivedChunks: { chunk_index: number; chunk_size: number }[]; receivedBytes: number }>(
+        "/transfers/" + encodeURIComponent(id) + "/chunks/start",
+        { method: "POST", body: JSON.stringify({ chunkSize: CHUNK_SIZE, chunkCount, mimeType: selected.type || "application/octet-stream" }) }
+      );
+      if (cancelled.current) {
+        await api("/transfers/" + encodeURIComponent(id) + "/chunks", { method: "DELETE" }).catch(() => undefined);
+        return;
+      }
+      const received = new Set(startData.receivedChunks.map((chunk) => Number(chunk.chunk_index)));
+      let completedBytes = startData.receivedBytes;
+      setProgress(selected.size ? Math.min(99, Math.round(completedBytes / selected.size * 100)) : 0);
       setDelivery("flying");
-      const result = await new Promise<{ shareUrl: string | null }>((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        xhr.open("POST", API + "/transfers/" + encodeURIComponent(created.transfer.id) + "/upload");
-        xhr.withCredentials = true;
-        xhr.upload.onprogress = (event) => { if (event.lengthComputable) setProgress(Math.min(99, Math.round(event.loaded / event.total * 100))); };
-        xhr.onload = () => {
-          let data: { shareUrl?: string | null; error?: string } = {};
-          try { data = JSON.parse(xhr.responseText); } catch { /* malformed response */ }
-          if (xhr.status < 200 || xhr.status >= 300) { reject(new Error(data.error || "Upload failed (" + xhr.status + ").")); return; }
-          resolve({ shareUrl: data.shareUrl || null });
-        };
-        xhr.onerror = () => reject(new Error("Network error while sending the file."));
-        xhr.onabort = () => reject(new Error("Upload was cancelled."));
-        const form = new FormData(); form.append("file", selected, selected.name); xhr.send(form);
-      });
-      setShareUrl(result.shareUrl || ""); setProgress(100); setDelivery("success"); setSelected(null);
+      const inFlight = new Map<number, number>();
+      let nextIndex = 0;
+      const updateProgress = () => {
+        const currentBytes = [...inFlight.values()].reduce((total, amount) => total + amount, 0);
+        setProgress(selected.size ? Math.min(99, Math.round((completedBytes + currentBytes) / selected.size * 100)) : 0);
+      };
+      const worker = async () => {
+        while (nextIndex < chunkCount && !cancelled.current) {
+          const index = nextIndex++;
+          if (received.has(index)) continue;
+          const offset = index * CHUNK_SIZE;
+          const blob = selected.slice(offset, Math.min(selected.size, offset + CHUNK_SIZE));
+          const digestBytes = await crypto.subtle.digest("SHA-256", await blob.arrayBuffer());
+          const digest = Array.from(new Uint8Array(digestBytes), (byte) => byte.toString(16).padStart(2, "0")).join("");
+          let lastError: unknown = null;
+          for (let attempt = 1; attempt <= MAX_RETRIES && !cancelled.current; attempt++) {
+            try {
+              inFlight.set(index, 0);
+              await putChunk(id!, index, blob, digest, (loaded) => { inFlight.set(index, loaded); updateProgress(); });
+              completedBytes += blob.size;
+              inFlight.delete(index);
+              updateProgress();
+              lastError = null;
+              break;
+            } catch (uploadError) {
+              inFlight.delete(index);
+              updateProgress();
+              lastError = uploadError;
+              if (cancelled.current) return;
+              if (attempt < MAX_RETRIES) await new Promise((resolve) => window.setTimeout(resolve, attempt * 600));
+            }
+          }
+          if (lastError) throw lastError instanceof Error ? lastError : new Error("A chunk could not be uploaded.");
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(CONCURRENT_CHUNKS, chunkCount) }, () => worker()));
+      if (cancelled.current) return;
+      if (completedBytes < selected.size) throw new Error("Some chunks are still missing. Retry the upload to continue.");
+      const completed = await api<{ shareUrl?: string | null; sha256: string }>(
+        "/transfers/" + encodeURIComponent(id) + "/chunks/complete",
+        { method: "POST", body: "{}" }
+      );
+      setShareUrl(completed.shareUrl || "");
+      setProgress(100); setDelivery("success"); setSelected(null); setTransferId(null);
       if (fileInput.current) fileInput.current.value = "";
       await onComplete();
     } catch (error) {
-      setDelivery("error");
-      setError(error instanceof Error ? error.message : "Could not send this file.");
-    } finally { setBusy(false); }
+      if (!cancelled.current) {
+        setDelivery("error");
+        setError(error instanceof Error ? error.message : "Could not send this file.");
+      }
+    } finally {
+      setBusy(false);
+      activeRequests.current.clear();
+    }
   };
   const copyLink = async () => {
     try { await navigator.clipboard.writeText(shareUrl); setCopied(true); window.setTimeout(() => setCopied(false), 1500); }
@@ -459,27 +562,30 @@ function SendModal({ onClose, onComplete }: { onClose: () => void; onComplete: (
   };
   const onDrop = (event: DragEvent<HTMLDivElement>) => { event.preventDefault(); setDragging(false); chooseFile(event.dataTransfer.files?.[0]); };
 
-  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose(); }}>
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) dismiss(); }}>
     <form className="dialog-card send-dialog" onSubmit={(event) => void send(event)}>
-      <div className="dialog-heading"><div><span className="section-kicker">NEW DELIVERY</span><h2>Send a file</h2><p>Choose who should receive your file.</p></div><button className="icon-button close-dialog" type="button" onClick={onClose} disabled={busy} aria-label="Close"><Icon name="close"/></button></div>
-      <label className="field-label">Recipient <span className="optional-label">Optional for a share link</span><input value={recipient} onChange={(event) => { setRecipient(event.target.value); setRecipientMatch(null); setRecipientError(""); }} onBlur={() => { if (recipient.trim()) void lookupRecipient(); }} placeholder="Email address or @username" disabled={busy}/></label>
+      <div className="dialog-heading"><div><span className="section-kicker">NEW DELIVERY</span><h2>Send a file</h2><p>Choose who should receive your file.</p></div><button className="icon-button close-dialog" type="button" onClick={dismiss} disabled={busy} aria-label="Close"><Icon name="close"/></button></div>
+      <label className="field-label">Recipient <span className="optional-label">Optional for a share link</span><input value={recipient} onChange={(event) => { setRecipient(event.target.value); setRecipientMatch(null); setRecipientError(""); }} onBlur={() => { if (recipient.trim() && !transferId) void lookupRecipient(); }} placeholder="Email address or @username" disabled={busy || Boolean(transferId)}/></label>
       {recipientMatch && <div className="recipient-confirm"><Avatar user={{ id: "recipient", displayName: recipientMatch.displayName, username: recipientMatch.username, email: "" }} size="small"/><div><strong>{recipientMatch.displayName}</strong><span>@{recipientMatch.username}</span></div><Icon name="check"/></div>}
       {recipientError && <div className="form-alert">{recipientError}</div>}
       <div className="field-label">File to send
-        <div className={"file-drop-zone" + (dragging ? " dragging" : "")} onDragEnter={(event) => { event.preventDefault(); setDragging(true); }} onDragOver={(event) => event.preventDefault()} onDragLeave={(event) => { event.preventDefault(); if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false); }} onDrop={onDrop} onClick={() => !busy && fileInput.current?.click()} role="button" tabIndex={0} onKeyDown={(event) => { if ((event.key === "Enter" || event.key === " ") && !busy) fileInput.current?.click(); }}>
-          <input ref={fileInput} className="visually-hidden" type="file" onChange={(event) => chooseFile(event.target.files?.[0])} disabled={busy}/>
-          {selected ? <><span className="file-drop-icon"><Icon name="file"/></span><strong className="chosen-file-name">{selected.name}</strong><span>{bytes(selected.size)} · Ready to deliver</span><button className="remove-selected" type="button" disabled={busy} onClick={(event) => { event.stopPropagation(); setSelected(null); if (fileInput.current) fileInput.current.value = ""; }}>Remove file</button></> : <><span className="file-drop-icon"><Icon name="upload"/></span><strong>Drop your file here</strong><span>or <b>browse your device</b></span><small>Maximum file size: {MAX_MB} MB</small></>}
+        <div className={"file-drop-zone" + (dragging ? " dragging" : "")} onDragEnter={(event) => { event.preventDefault(); setDragging(true); }} onDragOver={(event) => event.preventDefault()} onDragLeave={(event) => { event.preventDefault(); if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false); }} onDrop={onDrop} onClick={() => !busy && !transferId && fileInput.current?.click()} role="button" tabIndex={0} onKeyDown={(event) => { if ((event.key === "Enter" || event.key === " ") && !busy && !transferId) fileInput.current?.click(); }}>
+          <input ref={fileInput} className="visually-hidden" type="file" onChange={(event) => chooseFile(event.target.files?.[0])} disabled={busy || Boolean(transferId)}/>
+          {selected ? <><span className="file-drop-icon"><Icon name="file"/></span><strong className="chosen-file-name">{selected.name}</strong><span>{bytes(selected.size)} · {transferId ? "Ready to resume" : "Ready to deliver"}</span><button className="remove-selected" type="button" disabled={busy || Boolean(transferId)} onClick={(event) => { event.stopPropagation(); setSelected(null); if (fileInput.current) fileInput.current.value = ""; }}>Remove file</button></> : <><span className="file-drop-icon"><Icon name="upload"/></span><strong>Drop your file here</strong><span>or <b>browse your device</b></span><small>Maximum file size: {MAX_MB} MB</small></>}
         </div>
       </div>
       {delivery !== "idle" && <div className={"delivery-stage delivery-" + delivery}>
         <div className="delivery-track"><span className="delivery-track-start"/><span className="delivery-track-end"/><div className={"raven-flight" + (delivery === "flying" ? " in-flight" : "") + (delivery === "success" ? " landed" : "")}><DeliveryRaven/></div></div>
         <strong>{delivery === "preparing" ? "Preparing your delivery…" : delivery === "flying" ? "Your raven is on its way!" : delivery === "success" ? "Delivery complete!" : "Delivery could not be completed"}</strong>
-        <span>{delivery === "flying" ? "Sending your file · " + progress + "%" : delivery === "preparing" ? "Getting your file ready." : delivery === "success" ? "Your file has been uploaded successfully." : "Check the error below and try again."}</span>
+        <span>{delivery === "flying" ? "Sending verified chunks · " + progress + "%" : delivery === "preparing" ? "Preparing your file chunks." : delivery === "success" ? "All chunks verified and delivered." : "Your accepted chunks are saved for a retry during this session."}</span>
       </div>}
       {error && <div className="form-alert" role="alert">{error}</div>}
       {shareUrl && <div className="share-result"><div><span className="section-kicker">SHARE LINK READY</span><strong>{shareUrl}</strong></div><button className="outline-button" type="button" onClick={() => void copyLink()}><Icon name="copy"/>{copied ? "Copied" : "Copy"}</button></div>}
-      <div className="dialog-actions"><button className="secondary-action" type="button" onClick={onClose} disabled={busy}>{delivery === "success" ? "Done" : "Cancel"}</button><button className="primary-button send-submit" type="submit" disabled={!selected || busy || delivery === "success"}>{busy ? "Sending…" : delivery === "success" ? "Sent successfully" : <>Send file <Icon name="send"/></>}</button></div>
-      <p className="modal-footnote">The recipient can find this file in Received Files. Files are never downloaded automatically.</p>
+      <div className="dialog-actions">
+        <button className="secondary-action" type="button" onClick={() => busy ? void cancelUpload() : dismiss()}>{busy ? "Cancel upload" : delivery === "success" ? "Done" : "Cancel"}</button>
+        <button className="primary-button send-submit" type="submit" disabled={!selected || busy || delivery === "success"}>{busy ? "Sending chunks…" : delivery === "success" ? "Sent successfully" : transferId ? <>Retry delivery <Icon name="send"/></> : <>Send file <Icon name="send"/></>}</button>
+      </div>
+      <p className="modal-footnote">Files are split into 8 MB chunks, verified individually and reassembled before delivery. Received files are never downloaded automatically.</p>
     </form>
   </div>;
 }
