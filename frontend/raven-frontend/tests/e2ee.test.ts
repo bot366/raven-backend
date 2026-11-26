@@ -68,13 +68,13 @@ test("RAVEN E2EE identity recovery, HPKE key envelopes and AES-GCM file chunks r
   assert.equal(recipient.pair.privateKey.extractable, false);
 
   const senderFileKey = await unwrapTransferKey(
-    sender.pair, transferId, "sender-test-id", "sender", senderEnvelope.enc, senderEnvelope.ciphertext, senderCreated.payload.publicKey,
+    sender.pair, transferId, "sender-test-id", "sender-test-id", "sender", senderEnvelope.enc, senderEnvelope.ciphertext, senderCreated.payload.publicKey,
   );
   const recipientFileKey = await unwrapTransferKey(
-    recipient.pair, transferId, "recipient-test-id", "recipient", recipientEnvelope.enc, recipientEnvelope.ciphertext, senderCreated.payload.publicKey,
+    recipient.pair, transferId, "sender-test-id", "recipient-test-id", "recipient", recipientEnvelope.enc, recipientEnvelope.ciphertext, senderCreated.payload.publicKey,
   );
   await assert.rejects(
-    () => unwrapTransferKey(sender.pair, transferId, "sender-test-id", "sender", recipientEnvelope.enc, recipientEnvelope.ciphertext, senderCreated.payload.publicKey),
+    () => unwrapTransferKey(sender.pair, transferId, "sender-test-id", "sender-test-id", "sender", recipientEnvelope.enc, recipientEnvelope.ciphertext, senderCreated.payload.publicKey),
   );
 
   const senderFingerprint = await getKeyFingerprint(senderCreated.payload.publicKey);
@@ -84,7 +84,7 @@ test("RAVEN E2EE identity recovery, HPKE key envelopes and AES-GCM file chunks r
   assert.ok(!fingerprintsMatch(senderFingerprint, recipientFingerprint));
   await assert.rejects(
     () => unwrapTransferKey(
-      recipient.pair, transferId + "-changed", "recipient-test-id", "recipient",
+      recipient.pair, transferId + "-changed", "sender-test-id", "recipient-test-id", "recipient",
       recipientEnvelope.enc, recipientEnvelope.ciphertext, senderCreated.payload.publicKey,
     ),
   );
