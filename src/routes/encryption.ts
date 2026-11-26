@@ -23,7 +23,8 @@ function isBase64(value: unknown, minBytes: number, maxBytes: number): value is 
   if (typeof value !== "string" || value.length > Math.ceil(maxBytes * 4 / 3) + 8) return false;
   if (!/^[A-Za-z0-9+/]+={0,2}$/.test(value)) return false;
   const decoded = Buffer.from(value, "base64");
-  return decoded.length >= minBytes && decoded.length <= maxBytes;
+  return decoded.toString("base64") === value &&
+    decoded.length >= minBytes && decoded.length <= maxBytes;
 }
 
 async function requireUser(request: FastifyRequest, reply: FastifyReply) {
@@ -53,6 +54,7 @@ export async function encryptionRoutes(app: FastifyInstance): Promise<void> {
     if (!user) return;
     const { publicKey, encryptedPrivateKey, recoverySalt, recoveryNonce } = request.body ?? {};
     if (!isBase64(publicKey, 65, 65) ||
+        Buffer.from(publicKey as string, "base64")[0] !== 0x04 ||
         !isBase64(encryptedPrivateKey, 48, 512) ||
         !isBase64(recoverySalt, 16, 16) ||
         !isBase64(recoveryNonce, 12, 12)) {
@@ -130,10 +132,14 @@ export async function encryptionRoutes(app: FastifyInstance): Promise<void> {
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
-      await client.query(
-        "UPDATE transfers SET encrypted_metadata=$2, metadata_nonce=$3 WHERE id=$1 AND user_id=$4 AND status='pending'",
+      const transferUpdate = await client.query(
+        "UPDATE transfers SET encrypted_metadata=$2, metadata_nonce=$3 WHERE id=$1 AND user_id=$4 AND status='pending' RETURNING id",
         [transfer.id, metadata, metadataNonce, user.id]
       );
+      if (transferUpdate.rowCount !== 1) {
+        await client.query("ROLLBACK");
+        return reply.code(409).send({ error: "The transfer is no longer pending. Start a new encrypted transfer." });
+      }
       for (const envelope of envelopes) {
         await client.query(
           `INSERT INTO transfer_key_envelopes (transfer_id, user_id, key_version, enc, ciphertext)
