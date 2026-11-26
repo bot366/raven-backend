@@ -357,15 +357,15 @@ function App() {
             </section>
             <section className="content-card activity-card">
               <div className="section-heading"><div><span className="section-kicker">LATEST UPDATES</span><h2>Recent activity</h2></div><button className="text-button" onClick={() => selectPage("sent")}>View sent files <span>→</span></button></div>
-              {loadingTransfers ? <LoadingLine/> : recent.length === 0 ? <EmptyState title="No activity yet" text="Your sent and received files will appear here."/> : <div className="activity-list">{recent.map((item) => <TransferRow key={item.id} transfer={item} kind={received.some((rec) => rec.id === item.id) ? "received" : "sent"} />)}</div>}
+              {loadingTransfers ? <LoadingLine/> : recent.length === 0 ? <EmptyState title="No activity yet" text="Your sent and received files will appear here."/> : <div className="activity-list">{recent.map((item) => <TransferRow key={item.id} transfer={item} userId={user.id} kind={received.some((rec) => rec.id === item.id) ? "received" : "sent"} />)}</div>}
             </section>
           </>}
 
-          {page === "sent" && <section className="content-card full-list-card"><div className="section-heading"><div><span className="section-kicker">YOUR OUTGOING FILES</span><h2>Sent files</h2></div><button className="primary-button compact-button" onClick={openSend}><Icon name="upload"/> Send a file</button></div>{loadingTransfers ? <LoadingLine/> : transfers.length === 0 ? <EmptyState title="Nothing sent yet" text="Files you upload will appear here."/> : <div className="activity-list">{transfers.map((item) => <TransferRow key={item.id} transfer={item} kind="sent" onCopy={setPageError}/>)}</div>}</section>}
+          {page === "sent" && <section className="content-card full-list-card"><div className="section-heading"><div><span className="section-kicker">YOUR OUTGOING FILES</span><h2>Sent files</h2></div><button className="primary-button compact-button" onClick={openSend}><Icon name="upload"/> Send a file</button></div>{loadingTransfers ? <LoadingLine/> : transfers.length === 0 ? <EmptyState title="Nothing sent yet" text="Files you upload will appear here."/> : <div className="activity-list">{transfers.map((item) => <TransferRow key={item.id} transfer={item} userId={user.id} kind="sent" onCopy={setPageError}/>) }</div>}</section>}
 
-          {page === "received" && <section className="content-card full-list-card"><div className="section-heading"><div><span className="section-kicker">DELIVERED TO YOU</span><h2>Received files</h2></div><span className="count-pill">{received.length} files</span></div>{loadingTransfers ? <LoadingLine/> : received.length === 0 ? <EmptyState title="Your inbox is empty" text="Files sent directly to your RAVEN username or email will appear here."/> : <div className="activity-list">{received.map((item) => <TransferRow key={item.id} transfer={item} kind="received"/>)}</div>}</section>}
+          {page === "received" && <section className="content-card full-list-card"><div className="section-heading"><div><span className="section-kicker">DELIVERED TO YOU</span><h2>Received files</h2></div><span className="count-pill">{received.length} files</span></div>{loadingTransfers ? <LoadingLine/> : received.length === 0 ? <EmptyState title="Your inbox is empty" text="Files sent directly to your RAVEN username or email will appear here."/> : <div className="activity-list">{received.map((item) => <TransferRow key={item.id} transfer={item} userId={user.id} kind="received" onCopy={setPageError}/>) }</div>}</section>}
 
-          {page === "links" && <section className="content-card full-list-card"><div className="section-heading"><div><span className="section-kicker">LINK SHARING</span><h2>Shared links</h2></div><span className="count-pill">{sharedLinks.length} links</span></div>{sharedLinks.length === 0 ? <EmptyState title="No shared links yet" text="Upload a file without choosing a recipient to create a share link."/> : <div className="activity-list">{sharedLinks.map((item) => <TransferRow key={item.id} transfer={item} kind="link" onCopy={setPageError}/>)}</div>}</section>}
+          {page === "links" && <section className="content-card full-list-card"><div className="section-heading"><div><span className="section-kicker">LINK SHARING</span><h2>Shared links</h2></div><span className="count-pill">{sharedLinks.length} links</span></div>{sharedLinks.length === 0 ? <EmptyState title="No shared links yet" text="Upload a file without choosing a recipient to create a share link."/> : <div className="activity-list">{sharedLinks.map((item) => <TransferRow key={item.id} transfer={item} userId={user.id} kind="link" onCopy={setPageError}/>) }</div>}</section>}
 
           {page === "settings" && <ProfileSettings user={user} avatarUrl={avatarUrl} setUser={setUser} setAvatarUrl={setAvatarUrl} setError={setPageError}/>}
           <footer className="workspace-footer"><span>RAVEN / Your files, in one place.</span><span>Secure account workspace</span></footer>
@@ -373,7 +373,7 @@ function App() {
       </div>
 
       {usernameSetup && <div className="modal-backdrop setup-backdrop"><form className="dialog-card username-dialog" onSubmit={(event) => void finishUsernameSetup(event)}><div className="dialog-icon"><Icon name="user"/></div><span className="section-kicker">ONE LAST STEP</span><h2>Choose your RAVEN username</h2><p>Your account was created before usernames were introduced. Choose a unique username so other people can send files to you.</p><label className="field-label">Username<input name="username" minLength={3} maxLength={20} pattern="[A-Za-z0-9_]{3,20}" placeholder="e.g. raven_user" required autoFocus/><small>3–20 letters, numbers or underscores. You can change this later in Settings.</small></label>{pageError && <div className="form-alert">{pageError}</div>}<button className="primary-button" type="submit">Save username <Icon name="check"/></button></form></div>}
-      {sendOpen && <SendModal onClose={() => setSendOpen(false)} onComplete={async () => { await refreshTransfers(); }} />}
+      {sendOpen && <SendModal userId={user.id} onClose={() => setSendOpen(false)} onComplete={async () => { await refreshTransfers(); }} />}
     </div>
   );
 }
@@ -386,8 +386,16 @@ function EmptyState({ title, text }: { title: string; text: string }) {
 }
 function LoadingLine() { return <div className="loading-line"><span/> Loading your files…</div>; }
 
-function TransferRow({ transfer, kind, onCopy }: { transfer: Transfer; kind: "sent" | "received" | "link"; onCopy?: (message: string) => void }) {
+function TransferRow({ transfer, kind, onCopy, userId }: { transfer: Transfer; kind: "sent" | "received" | "link"; onCopy?: (message: string) => void; userId?: string }) {
   const [copied, setCopied] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+  const downloadEncrypted = async () => {
+    if (!userId || downloading) return;
+    setDownloading(true);
+    try { await decryptAndDownloadTransfer(transfer.id, userId); }
+    catch (error) { onCopy?.(error instanceof Error ? error.message : "Could not decrypt this file."); }
+    finally { setDownloading(false); }
+  };
   const received = kind === "received";
   const title = kind === "link" ? "Share link" : received ? "Received file" : "Sent file";
   const downloadUrl = API + "/transfers/" + encodeURIComponent(transfer.id) + "/download";
@@ -403,11 +411,80 @@ function TransferRow({ transfer, kind, onCopy }: { transfer: Transfer; kind: "se
     <span className="transfer-file-icon"><Icon name="file"/></span>
     <div className="transfer-file-meta"><strong>{transfer.filename}</strong><span>{bytes(transfer.filesize)} · {received ? "From " + (transfer.senderUsername ? "@" + transfer.senderUsername : transfer.senderName || transfer.senderEmail || "RAVEN user") : transfer.createdAt ? new Date(transfer.createdAt).toLocaleString() : "Recently"}</span></div>
     <span className={"transfer-type type-" + kind}>{title}</span>
-    {received && transfer.status === "completed" && <a className="outline-button download-button" href={downloadUrl}><Icon name="download"/> Download</a>}
+    {transfer.status === "completed" && transfer.encryptionVersion === 1 && userId && <button className="outline-button download-button" type="button" disabled={downloading} onClick={() => void downloadEncrypted()}><Icon name="lock"/>{downloading ? "Decrypting…" : "Decrypt & download"}</button>}
+    {received && transfer.status === "completed" && transfer.encryptionVersion !== 1 && <a className="outline-button download-button" href={downloadUrl}><Icon name="download"/> Download</a>}
     {kind === "link" && transfer.shareUrl && <button className="outline-button" onClick={() => void copy()}><Icon name="copy"/> {copied ? "Copied" : "Copy link"}</button>}
     {!received && kind !== "link" && transfer.shareUrl && <button className="quiet-icon-button" title="Copy share link" onClick={() => void copy()}><Icon name="copy"/></button>}
     {transfer.status !== "completed" && <span className={"status-tag status-" + transfer.status}>{transfer.status}</span>}
   </article>;
+}
+
+
+function EncryptionSettings({ userId }: { userId: string }) {
+  const [keyRecord, setKeyRecord] = useState<StoredEncryptionKey | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [recoveryCode, setRecoveryCode] = useState("");
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const unlocked = Boolean(getCachedEncryptionIdentity(userId));
+
+  const reloadKey = async () => {
+    setLoading(true);
+    try {
+      const result = await api<{ key: StoredEncryptionKey | null }>("/encryption/keys/me");
+      setKeyRecord(result.key);
+      setError("");
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "Could not load encryption settings.");
+    } finally { setLoading(false); }
+  };
+  useEffect(() => { void reloadKey(); }, [userId]);
+
+  const setup = async () => {
+    setBusy(true); setError(""); setMessage("");
+    try {
+      const created = await createEncryptionIdentity();
+      await api("/encryption/keys/me", { method: "PUT", body: JSON.stringify(created.payload) });
+      cacheEncryptionIdentity(userId, created.identity.pair);
+      setRecoveryCode(created.recoveryCode);
+      setMessage("Encryption key created. Save your recovery code before leaving this screen.");
+      await reloadKey();
+    } catch (setupError) {
+      setError(setupError instanceof Error ? setupError.message : "Could not create your encryption key.");
+    } finally { setBusy(false); }
+  };
+  const unlock = async () => {
+    setError(""); setMessage("");
+    const code = window.prompt("Enter your RAVEN encryption recovery code. RAVEN cannot recover this code for you.");
+    if (!code) return;
+    setBusy(true);
+    try {
+      const result = await api<{ key: StoredEncryptionKey | null }>("/encryption/keys/me");
+      if (!result.key) throw new Error("No encryption key has been set up for this account.");
+      await unlockEncryptionIdentity(userId, result.key, code);
+      setKeyRecord(result.key);
+      setMessage("Encryption is unlocked in this browser tab.");
+    } catch (unlockError) {
+      setError(unlockError instanceof Error ? unlockError.message : "Could not unlock encryption.");
+    } finally { setBusy(false); }
+  };
+  const copyCode = async () => {
+    try {
+      await navigator.clipboard.writeText(recoveryCode);
+      setMessage("Recovery code copied. Store it somewhere safe.");
+    } catch { setError("Clipboard access is unavailable. Select and copy the code manually."); }
+  };
+
+  return <section className="content-card settings-card">
+    <div className="section-heading"><div><span className="section-kicker">PRIVATE FILE TRANSFERS</span><h2>End-to-end encryption</h2></div><span className="count-pill">{keyRecord ? "Key created" : "Not configured"}</span></div>
+    <p>Files sent directly to another RAVEN account can be encrypted in your browser. RAVEN stores the encrypted file and encrypted key copies, not your readable private key.</p>
+    {loading ? <LoadingLine/> : !keyRecord ? <div className="settings-block"><div><h3>Set up your encryption identity</h3><p>You and the person receiving a file must each set this up before encrypted transfers are possible.</p></div><button className="primary-button compact-button" type="button" disabled={busy} onClick={() => void setup()}>{busy ? "Setting up…" : "Set up encryption"}</button></div> : <div className="settings-block"><div><h3>Your encryption identity</h3><p>{unlocked ? "Unlocked in this browser tab." : "Your private key is locked. Enter your recovery code to use encrypted transfers."}</p></div><button className="outline-button" type="button" disabled={busy || unlocked} onClick={() => void unlock()}>{busy ? "Please wait…" : unlocked ? "Unlocked" : "Unlock encryption"}</button></div>}
+    {recoveryCode && <div className="settings-block"><div><h3>Save your recovery code</h3><p>This is the only way to restore your private encryption key on another device. Losing it may make encrypted files permanently unreadable.</p></div><div className="username-edit"><textarea className="recovery-code-field" value={recoveryCode} readOnly rows={2}/><button className="outline-button" type="button" onClick={() => void copyCode()}>Copy recovery code</button><button className="primary-button compact-button" type="button" onClick={() => setRecoveryCode("")}>I've saved it</button></div></div>}
+    {message && <div className="success-message"><Icon name="check"/>{message}</div>}
+    {error && <div className="form-alert" role="alert">{error}</div>}
+    <small className="settings-warning">For now, encryption is available for direct account-to-account transfers only. Public share links and older transfers are not end-to-end encrypted.</small>
+  </section>;
 }
 
 function ProfileSettings({ user, avatarUrl, setUser, setAvatarUrl, setError }: {
@@ -446,6 +523,7 @@ function ProfileSettings({ user, avatarUrl, setUser, setAvatarUrl, setError }: {
   };
   return <section className="content-card settings-card"><div className="section-heading"><div><span className="section-kicker">YOUR ACCOUNT</span><h2>Profile settings</h2></div></div>
     <div className="profile-summary"><Avatar user={user} imageUrl={avatarUrl} size="large"/><div><strong>{user.displayName}</strong><span>@{user.username}</span><small>{user.email}</small></div></div>
+    <EncryptionSettings userId={user.id}/>
     <div className="settings-divider"/>
     <div className="settings-block"><div><h3>Profile picture</h3><p>Your initials are used by default. Add a picture whenever you're ready.</p></div><div className="photo-actions"><button className="outline-button" onClick={() => avatarInput.current?.click()} disabled={photoBusy}>{photoBusy ? "Uploading…" : "Change photo"}</button><input ref={avatarInput} className="visually-hidden" type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={(event) => void uploadAvatar(event)}/><small>JPG, PNG, WebP or GIF · Max 2 MB</small></div></div>
     <div className="settings-divider"/>
