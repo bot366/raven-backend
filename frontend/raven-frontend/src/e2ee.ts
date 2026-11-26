@@ -214,6 +214,7 @@ export async function unlockEncryptionIdentity(
     false,
     ["deriveBits"],
   );
+  new Uint8Array(privateRaw).fill(0);
   const pair: CryptoKeyPair = { publicKey, privateKey };
   await assertKeyPairMatches(pair);
   const identity = {
@@ -239,7 +240,8 @@ async function wrapFileKey(
   fileKeyRaw: Uint8Array,
   recipientPublicKey: CryptoKey,
   senderPair: CryptoKeyPair,
-  userId: string,
+  senderId: string,
+  recipientId: string,
   keyVersion: number,
   transferId: string,
   purpose: "sender" | "recipient",
@@ -247,7 +249,7 @@ async function wrapFileKey(
   const context = await suite.createSenderContext({
     recipientPublicKey,
     senderKey: senderPair,
-    info: aad("RAVEN:FILE-KEY:1:" + transferId + ":" + userId + ":" + purpose),
+    info: aad("RAVEN:FILE-KEY:1:" + transferId + ":" + senderId + ":" + recipientId + ":" + purpose),
   });
   const ciphertext = await context.seal(toArrayBuffer(fileKeyRaw));
   return {
@@ -271,8 +273,8 @@ export async function createTransferEncryptionSession(
   const fileKeyRaw = randomBytes(32);
   const fileKey = await crypto.subtle.importKey("raw", toArrayBuffer(fileKeyRaw), "AES-GCM", false, ["encrypt", "decrypt"]);
   const recipientPublicKey = await suite.kem.deserializePublicKey(toArrayBuffer(fromBase64(recipientPublicKeyRaw)));
-  const senderEnvelope = await wrapFileKey(fileKeyRaw, senderPair.publicKey, senderPair, senderId, senderKeyVersion, transferId, "sender");
-  const recipientEnvelope = await wrapFileKey(fileKeyRaw, recipientPublicKey, senderPair, recipientId, recipientKeyVersion, transferId, "recipient");
+  const senderEnvelope = await wrapFileKey(fileKeyRaw, senderPair.publicKey, senderPair, senderId, senderId, senderKeyVersion, transferId, "sender");
+  const recipientEnvelope = await wrapFileKey(fileKeyRaw, recipientPublicKey, senderPair, senderId, recipientId, recipientKeyVersion, transferId, "recipient");
   fileKeyRaw.fill(0);
   const plaintextChunkSize = CHUNK_PLAINTEXT_SIZE;
   const chunkCount = Math.max(1, Math.ceil(file.size / plaintextChunkSize));
@@ -367,6 +369,7 @@ export async function decryptTransferMetadata(
 export async function unwrapTransferKey(
   pair: CryptoKeyPair,
   transferId: string,
+  senderUserId: string,
   recipientUserId: string,
   purpose: "sender" | "recipient",
   enc: string,
@@ -378,11 +381,16 @@ export async function unwrapTransferKey(
     recipientKey: pair.privateKey,
     enc: toArrayBuffer(fromBase64(enc)),
     senderPublicKey,
-    info: aad("RAVEN:FILE-KEY:1:" + transferId + ":" + recipientUserId + ":" + purpose),
+    info: aad("RAVEN:FILE-KEY:1:" + transferId + ":" + senderUserId + ":" + recipientUserId + ":" + purpose),
   });
   const fileKeyRaw = await context.open(toArrayBuffer(fromBase64(ciphertext)));
-  if (fileKeyRaw.byteLength !== 32) throw new Error("The transfer encryption key is invalid.");
-  return crypto.subtle.importKey("raw", fileKeyRaw, "AES-GCM", false, ["decrypt"]);
+  if (fileKeyRaw.byteLength !== 32) {
+    new Uint8Array(fileKeyRaw).fill(0);
+    throw new Error("The transfer encryption key is invalid.");
+  }
+  const fileKey = await crypto.subtle.importKey("raw", fileKeyRaw, "AES-GCM", false, ["decrypt"]);
+  new Uint8Array(fileKeyRaw).fill(0);
+  return fileKey;
 }
 
 export async function decryptTransferChunk(
