@@ -534,9 +534,9 @@ function ProfileSettings({ user, avatarUrl, setUser, setAvatarUrl, setError }: {
   </section>;
 }
 
-function SendModal({ onClose, onComplete }: { onClose: () => void; onComplete: () => Promise<void> }) {
+function SendModal({ userId, onClose, onComplete }: { userId: string; onClose: () => void; onComplete: () => Promise<void> }) {
   const [recipient, setRecipient] = useState("");
-  const [recipientMatch, setRecipientMatch] = useState<{ displayName: string; username: string | null } | null>(null);
+  const [recipientMatch, setRecipientMatch] = useState<{ id: string; displayName: string; username: string | null } | null>(null);
   const [recipientError, setRecipientError] = useState("");
   const [selected, setSelected] = useState<File | null>(null);
   const [dragging, setDragging] = useState(false);
@@ -550,7 +550,9 @@ function SendModal({ onClose, onComplete }: { onClose: () => void; onComplete: (
   const fileInput = useRef<HTMLInputElement>(null);
   const activeRequests = useRef<Set<XMLHttpRequest>>(new Set());
   const cancelled = useRef(false);
-  const CHUNK_SIZE = 8 * 1024 * 1024;
+  const encryptionSession = useRef<TransferEncryptionSession | null>(null);
+  const CHUNK_SIZE = 8 * 1024 * 1024 - 16;
+  const SERVER_CHUNK_SIZE = 8 * 1024 * 1024;
   const CONCURRENT_CHUNKS = 3;
   const MAX_RETRIES = 3;
 
@@ -559,22 +561,23 @@ function SendModal({ onClose, onComplete }: { onClose: () => void; onComplete: (
     if (transferId) {
       void api("/transfers/" + encodeURIComponent(transferId) + "/chunks", { method: "DELETE" }).catch(() => undefined);
       setTransferId(null);
+      encryptionSession.current = null;
     }
     setError(""); setShareUrl(""); setDelivery("idle"); setProgress(0);
     if (file.size > MAX_MB * 1024 * 1024) { setSelected(null); setError("File exceeds the " + MAX_MB + " MB limit."); return; }
     setSelected(file);
   };
-  const lookupRecipient = async () => {
+  const lookupRecipient = async (): Promise<{ id: string; displayName: string; username: string | null } | null> => {
     const value = recipient.trim();
     setRecipientError(""); setRecipientMatch(null);
-    if (!value) return true;
+    if (!value) return null;
     try {
-      const result = await api<{ user: { displayName: string; username: string | null } }>("/users/lookup?identifier=" + encodeURIComponent(value));
+      const result = await api<{ user: { id: string; displayName: string; username: string | null } }>("/users/lookup?identifier=" + encodeURIComponent(value));
       setRecipientMatch(result.user);
-      return true;
+      return result.user;
     } catch (error) {
       setRecipientError(error instanceof Error ? error.message : "Could not find that RAVEN account.");
-      return false;
+      return null;
     }
   };
   const putChunk = (id: string, index: number, blob: Blob, digest: string, onProgress: (loaded: number) => void) =>
@@ -601,6 +604,7 @@ function SendModal({ onClose, onComplete }: { onClose: () => void; onComplete: (
     });
   const dismiss = () => {
     if (transferId) void api("/transfers/" + encodeURIComponent(transferId) + "/chunks", { method: "DELETE" }).catch(() => undefined);
+    encryptionSession.current = null;
     onClose();
   };
   const cancelUpload = async () => {
@@ -609,6 +613,7 @@ function SendModal({ onClose, onComplete }: { onClose: () => void; onComplete: (
     const id = transferId;
     if (id) await api("/transfers/" + encodeURIComponent(id) + "/chunks", { method: "DELETE" }).catch(() => undefined);
     setTransferId(null);
+    encryptionSession.current = null;
     setBusy(false);
     setDelivery("idle");
     setProgress(0);
@@ -618,59 +623,109 @@ function SendModal({ onClose, onComplete }: { onClose: () => void; onComplete: (
     event.preventDefault();
     if (!selected || busy || delivery === "success") return;
     setError(""); setRecipientError(""); setShareUrl("");
-    if (!transferId && recipient.trim()) {
-      const matched = await lookupRecipient();
-      if (!matched) return;
+    if (!recipient.trim()) {
+      setError("Encrypted transfers currently require a recipient with a RAVEN account. Public share links are not encrypted yet.");
+      return;
     }
+    let resolvedRecipient = recipientMatch;
+    if (!resolvedRecipient) {
+      resolvedRecipient = await lookupRecipient();
+      if (!resolvedRecipient) return;
+    }
+
     cancelled.current = false;
     setBusy(true); setDelivery("preparing"); setProgress(0);
+    let activeId = transferId;
     try {
-      let id = transferId;
-      if (!id) {
+      const senderIdentity = await requireUnlockedEncryptionIdentity(userId);
+      const recipientKeyResult = await api<{ key: { user_id: string; key_version: number; public_key: string } }>(
+        "/encryption/keys/" + encodeURIComponent(resolvedRecipient.id) + "/public"
+      );
+      const recipientKey = recipientKeyResult.key;
+
+      if (!activeId) {
+        const chunkCount = Math.max(1, Math.ceil(selected.size / CHUNK_SIZE));
+        const encryptedSize = selected.size + chunkCount * 16;
+        if (encryptedSize > MAX_MB * 1024 * 1024) {
+          throw new Error("This file is too large after encryption overhead. Choose a slightly smaller file.");
+        }
         const created = await api<{ transfer: { id: string } }>("/transfers", {
           method: "POST",
-          body: JSON.stringify({ filename: selected.name, filesize: selected.size, recipientIdentifier: recipient.trim() || undefined })
+          body: JSON.stringify({
+            filename: "Encrypted file",
+            filesize: encryptedSize,
+            recipientIdentifier: recipient.trim(),
+            encryptionVersion: 1
+          })
         });
-        id = created.transfer.id;
-        setTransferId(id);
+        activeId = created.transfer.id;
+        setTransferId(activeId);
         if (cancelled.current) {
-          await api("/transfers/" + encodeURIComponent(id) + "/chunks", { method: "DELETE" }).catch(() => undefined);
+          await api("/transfers/" + encodeURIComponent(activeId) + "/chunks", { method: "DELETE" }).catch(() => undefined);
           return;
         }
       }
-      const chunkCount = Math.max(1, Math.ceil(selected.size / CHUNK_SIZE));
+
+      if (!encryptionSession.current) {
+        encryptionSession.current = await createTransferEncryptionSession(
+          selected,
+          activeId,
+          userId,
+          senderIdentity.pair,
+          senderIdentity.keyVersion,
+          recipientKey.user_id,
+          recipientKey.public_key,
+          Number(recipientKey.key_version)
+        );
+      }
+      const session = encryptionSession.current;
+      await api("/transfers/" + encodeURIComponent(activeId) + "/envelopes", {
+        method: "POST",
+        body: JSON.stringify({
+          encryptedMetadata: session.encryptedMetadata,
+          metadataNonce: encodeBase64(session.metadataNonce),
+          envelopes: session.envelopes
+        })
+      });
+
       const startData = await api<{ receivedChunks: { chunk_index: number; chunk_size: number }[]; receivedBytes: number }>(
-        "/transfers/" + encodeURIComponent(id) + "/chunks/start",
-        { method: "POST", body: JSON.stringify({ chunkSize: CHUNK_SIZE, chunkCount, mimeType: selected.type || "application/octet-stream" }) }
+        "/transfers/" + encodeURIComponent(activeId) + "/chunks/start",
+        { method: "POST", body: JSON.stringify({
+          chunkSize: SERVER_CHUNK_SIZE,
+          chunkCount: session.chunkCount,
+          mimeType: "application/octet-stream"
+        }) }
       );
       if (cancelled.current) {
-        await api("/transfers/" + encodeURIComponent(id) + "/chunks", { method: "DELETE" }).catch(() => undefined);
+        await api("/transfers/" + encodeURIComponent(activeId) + "/chunks", { method: "DELETE" }).catch(() => undefined);
         return;
       }
       const received = new Set(startData.receivedChunks.map((chunk) => Number(chunk.chunk_index)));
       let completedBytes = startData.receivedBytes;
-      setProgress(selected.size ? Math.min(99, Math.round(completedBytes / selected.size * 100)) : 0);
+      setProgress(session.cipherSize ? Math.min(99, Math.round(completedBytes / session.cipherSize * 100)) : 0);
       setDelivery("flying");
       const inFlight = new Map<number, number>();
       let nextIndex = 0;
       const updateProgress = () => {
         const currentBytes = [...inFlight.values()].reduce((total, amount) => total + amount, 0);
-        setProgress(selected.size ? Math.min(99, Math.round((completedBytes + currentBytes) / selected.size * 100)) : 0);
+        setProgress(session.cipherSize ? Math.min(99, Math.round((completedBytes + currentBytes) / session.cipherSize * 100)) : 0);
       };
       const worker = async () => {
-        while (nextIndex < chunkCount && !cancelled.current) {
+        while (nextIndex < session.chunkCount && !cancelled.current) {
           const index = nextIndex++;
           if (received.has(index)) continue;
-          const offset = index * CHUNK_SIZE;
-          const blob = selected.slice(offset, Math.min(selected.size, offset + CHUNK_SIZE));
-          const digestBytes = await crypto.subtle.digest("SHA-256", await blob.arrayBuffer());
+          const offset = index * session.plaintextChunkSize;
+          const plaintext = selected.slice(offset, Math.min(selected.size, offset + session.plaintextChunkSize));
+          const encryptedBytes = await encryptTransferChunk(session, activeId!, index, plaintext);
+          const encryptedBlob = new Blob([encryptedBytes], { type: "application/octet-stream" });
+          const digestBytes = await crypto.subtle.digest("SHA-256", await encryptedBlob.arrayBuffer());
           const digest = Array.from(new Uint8Array(digestBytes), (byte) => byte.toString(16).padStart(2, "0")).join("");
           let lastError: unknown = null;
           for (let attempt = 1; attempt <= MAX_RETRIES && !cancelled.current; attempt++) {
             try {
               inFlight.set(index, 0);
-              await putChunk(id!, index, blob, digest, (loaded) => { inFlight.set(index, loaded); updateProgress(); });
-              completedBytes += blob.size;
+              await putChunk(activeId!, index, encryptedBlob, digest, (loaded) => { inFlight.set(index, loaded); updateProgress(); });
+              completedBytes += encryptedBlob.size;
               inFlight.delete(index);
               updateProgress();
               lastError = null;
@@ -683,24 +738,28 @@ function SendModal({ onClose, onComplete }: { onClose: () => void; onComplete: (
               if (attempt < MAX_RETRIES) await new Promise((resolve) => window.setTimeout(resolve, attempt * 600));
             }
           }
-          if (lastError) throw lastError instanceof Error ? lastError : new Error("A chunk could not be uploaded.");
+          if (lastError) throw lastError instanceof Error ? lastError : new Error("An encrypted chunk could not be uploaded.");
         }
       };
-      await Promise.all(Array.from({ length: Math.min(CONCURRENT_CHUNKS, chunkCount) }, () => worker()));
+      await Promise.all(Array.from({ length: Math.min(CONCURRENT_CHUNKS, session.chunkCount) }, () => worker()));
       if (cancelled.current) return;
-      if (completedBytes < selected.size) throw new Error("Some chunks are still missing. Retry the upload to continue.");
-      const completed = await api<{ shareUrl?: string | null; sha256: string }>(
-        "/transfers/" + encodeURIComponent(id) + "/chunks/complete",
-        { method: "POST", body: "{}" }
-      );
-      setShareUrl(completed.shareUrl || "");
+      if (completedBytes < session.cipherSize) throw new Error("Some encrypted chunks are still missing. Retry the delivery to continue.");
+      await api("/transfers/" + encodeURIComponent(activeId) + "/chunks/complete", {
+        method: "POST", body: "{}"
+      });
+      setShareUrl("");
       setProgress(100); setDelivery("success"); setSelected(null); setTransferId(null);
+      encryptionSession.current = null;
       if (fileInput.current) fileInput.current.value = "";
       await onComplete();
     } catch (error) {
       if (!cancelled.current) {
+        if (activeId && !encryptionSession.current) {
+          await api("/transfers/" + encodeURIComponent(activeId) + "/chunks", { method: "DELETE" }).catch(() => undefined);
+          setTransferId(null);
+        }
         setDelivery("error");
-        setError(error instanceof Error ? error.message : "Could not send this file.");
+        setError(error instanceof Error ? error.message : "Could not send this encrypted file.");
       }
     } finally {
       setBusy(false);
@@ -715,8 +774,8 @@ function SendModal({ onClose, onComplete }: { onClose: () => void; onComplete: (
 
   return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) dismiss(); }}>
     <form className="dialog-card send-dialog" onSubmit={(event) => void send(event)}>
-      <div className="dialog-heading"><div><span className="section-kicker">NEW DELIVERY</span><h2>Send a file</h2><p>Choose who should receive your file.</p></div><button className="icon-button close-dialog" type="button" onClick={dismiss} disabled={busy} aria-label="Close"><Icon name="close"/></button></div>
-      <label className="field-label">Recipient <span className="optional-label">Optional for a share link</span><input value={recipient} onChange={(event) => { setRecipient(event.target.value); setRecipientMatch(null); setRecipientError(""); }} onBlur={() => { if (recipient.trim() && !transferId) void lookupRecipient(); }} placeholder="Email address or @username" disabled={busy || Boolean(transferId)}/></label>
+      <div className="dialog-heading"><div><span className="section-kicker">ENCRYPTED DELIVERY</span><h2>Send a file</h2><p>Your file is encrypted on this device before upload.</p></div><button className="icon-button close-dialog" type="button" onClick={dismiss} disabled={busy} aria-label="Close"><Icon name="close"/></button></div>
+      <label className="field-label">Recipient <span className="optional-label">Required for encryption</span><input value={recipient} onChange={(event) => { setRecipient(event.target.value); setRecipientMatch(null); setRecipientError(""); }} onBlur={() => { if (recipient.trim() && !transferId) void lookupRecipient(); }} placeholder="Email address or @username" disabled={busy || Boolean(transferId)}/></label>
       {recipientMatch && <div className="recipient-confirm"><Avatar user={{ id: "recipient", displayName: recipientMatch.displayName, username: recipientMatch.username, email: "" }} size="small"/><div><strong>{recipientMatch.displayName}</strong><span>@{recipientMatch.username}</span></div><Icon name="check"/></div>}
       {recipientError && <div className="form-alert">{recipientError}</div>}
       <div className="field-label">File to send
@@ -736,7 +795,7 @@ function SendModal({ onClose, onComplete }: { onClose: () => void; onComplete: (
         <button className="secondary-action" type="button" onClick={() => busy ? void cancelUpload() : dismiss()}>{busy ? "Cancel upload" : delivery === "success" ? "Done" : "Cancel"}</button>
         <button className="primary-button send-submit" type="submit" disabled={!selected || busy || delivery === "success"}>{busy ? "Sending chunks…" : delivery === "success" ? "Sent successfully" : transferId ? <>Retry delivery <Icon name="send"/></> : <>Send file <Icon name="send"/></>}</button>
       </div>
-      <p className="modal-footnote">Files are split into 8 MB chunks, verified individually and reassembled before delivery. Received files are never downloaded automatically.</p>
+      <p className="modal-footnote">RAVEN encrypts each file chunk on your device. Only the recipient's account and your own account receive a wrapped decryption key. Public share links are not yet supported for encrypted files.</p>
     </form>
   </div>;
 }
