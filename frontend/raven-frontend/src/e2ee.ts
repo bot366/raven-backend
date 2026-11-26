@@ -122,7 +122,7 @@ async function assertKeyPairMatches(pair: CryptoKeyPair): Promise<void> {
   });
   const ciphertext = await senderContext.seal(toArrayBuffer(challenge));
   const recipientContext = await suite.createRecipientContext({
-    recipientKey: pair.privateKey,
+    recipientKey: pair,
     enc: senderContext.enc,
     senderPublicKey: pair.publicKey,
     info,
@@ -378,7 +378,7 @@ export async function unwrapTransferKey(
 ): Promise<CryptoKey> {
   const senderPublicKey = await suite.kem.deserializePublicKey(toArrayBuffer(fromBase64(senderPublicKeyRaw)));
   const context = await suite.createRecipientContext({
-    recipientKey: pair.privateKey,
+    recipientKey: pair,
     enc: toArrayBuffer(fromBase64(enc)),
     senderPublicKey,
     info: aad("RAVEN:FILE-KEY:1:" + transferId + ":" + senderUserId + ":" + recipientUserId + ":" + purpose),
