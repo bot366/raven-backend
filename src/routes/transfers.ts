@@ -93,6 +93,9 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
   const chunkSize=request.body?.chunkSize;
   const chunkCount=request.body?.chunkCount;
   const mimeType=typeof request.body?.mimeType==="string"?request.body.mimeType.slice(0,150):"application/octet-stream";
+  if(transfer.encryption_version===1&&mimeType!=="application/octet-stream"){
+   return reply.code(400).send({error:"Encrypted uploads must use the opaque application/octet-stream content type."});
+  }
   if(!Number.isSafeInteger(chunkSize)||!Number.isSafeInteger(chunkCount)||chunkSize!<MIN_CHUNK_BYTES||chunkSize!>MAX_CHUNK_BYTES||chunkCount!<1){
    return reply.code(400).send({error:"Invalid chunk size or count."});
   }
@@ -231,6 +234,18 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
   if(transfer.status==="completed")return {message:"Upload already completed.",transfer:publicTransfer(transfer),shareUrl:transfer.share_token?config.publicBaseUrl+"/share/"+transfer.share_token:null};
   if(transfer.status!=="pending")return reply.code(409).send({error:"This transfer is no longer pending."});
   if(!transfer.chunk_size||!transfer.chunk_count)return reply.code(409).send({error:"Initialize the chunked upload first."});
+  if(transfer.encryption_version===1){
+   const protection=await query<{encrypted_metadata:string|null;metadata_nonce:string|null;envelope_count:string}>(
+    `SELECT t.encrypted_metadata,t.metadata_nonce,COUNT(e.user_id)::text AS envelope_count
+     FROM transfers t LEFT JOIN transfer_key_envelopes e ON e.transfer_id=t.id
+     WHERE t.id=$1 GROUP BY t.id`,
+    [transfer.id]
+   );
+   const row=protection.rows[0];
+   if(!row?.encrypted_metadata||!row.metadata_nonce||Number(row.envelope_count)!==2){
+    return reply.code(409).send({error:"Encrypted metadata and both participant key envelopes must be saved before completion."});
+   }
+  }
   const parts=await query<ChunkRow>(
    "SELECT chunk_index,chunk_size,sha256,storage_path FROM transfer_chunks WHERE transfer_id=$1 ORDER BY chunk_index",
    [transfer.id]
@@ -413,6 +428,7 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
   const user=await requireUser(request,reply);if(!user)return;
   const transfer=await ownedTransfer(request.params.id,user.id);
   if(!transfer)return reply.code(404).send({error:"Transfer not found."});
+  if(transfer.encryption_version===1)return reply.code(409).send({error:"End-to-end encrypted transfers must use the encrypted chunk upload flow."});
   if(transfer.status!=="pending")return reply.code(409).send({error:"This transfer is not pending."});
   const chunked=await query<{chunk_count:number|null}>("SELECT chunk_count FROM transfers WHERE id=$1",[transfer.id]);
   if(chunked.rows[0]?.chunk_count)return reply.code(409).send({error:"This transfer uses the chunked upload endpoint."});
