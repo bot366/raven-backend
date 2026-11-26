@@ -64,6 +64,8 @@ test("RAVEN E2EE identity recovery, HPKE key envelopes and AES-GCM file chunks r
   const recipientEnvelope = session.envelopes.find((item) => item.userId === "recipient-test-id");
   assert.ok(senderEnvelope);
   assert.ok(recipientEnvelope);
+  assert.equal(sender.pair.privateKey.extractable, false);
+  assert.equal(recipient.pair.privateKey.extractable, false);
 
   const senderFileKey = await unwrapTransferKey(
     sender.pair, transferId, "sender-test-id", "sender", senderEnvelope.enc, senderEnvelope.ciphertext, senderCreated.payload.publicKey,
