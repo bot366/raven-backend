@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ChangeEvent, type DragEvent, type FormEvent } from "react";
 import {
-  cacheEncryptionIdentity, createEncryptionIdentity, createTransferEncryptionSession,
+  cacheEncryptionIdentity, clearCachedEncryptionIdentity, createEncryptionIdentity, createTransferEncryptionSession,
   decryptTransferChunk, decryptTransferMetadata, encodeBase64, getCachedEncryptionIdentity,
   encryptTransferChunk, getKeyFingerprint, unlockEncryptionIdentity, unwrapTransferKey,
   verifyAndPinPeerKey,
@@ -254,6 +254,7 @@ function App() {
     } finally { setAuthBusy(false); }
   };
   const logout = async () => {
+    if (user) clearCachedEncryptionIdentity(user.id);
     try { await api("/auth/logout", { method: "POST", body: "{}" }); }
     finally {
       setUser(null); setPage("overview"); setSendOpen(false); setMenuOpen(false);
