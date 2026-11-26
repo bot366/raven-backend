@@ -12,6 +12,7 @@ import {
   encodeBase64,
   getKeyFingerprint,
   fingerprintsMatch,
+  verifyAndPinPeerKey,
   type StoredEncryptionKey,
 } from "../src/e2ee.ts";
 
@@ -82,6 +83,38 @@ test("RAVEN E2EE identity recovery, HPKE key envelopes and AES-GCM file chunks r
   assert.equal(senderFingerprint.length, 79);
   assert.ok(fingerprintsMatch(senderFingerprint, senderFingerprint.toLowerCase().replace(/ /g, "-")));
   assert.ok(!fingerprintsMatch(senderFingerprint, recipientFingerprint));
+
+  const originalWindow = globalThis.window;
+  const pinStore = new Map<string, string>();
+  let promptFingerprint = recipientFingerprint;
+  const mockWindow = {
+    localStorage: {
+      getItem: (key: string) => pinStore.get(key) ?? null,
+      setItem: (key: string, value: string) => { pinStore.set(key, value); },
+    },
+    prompt: () => promptFingerprint,
+  } as unknown as Window & typeof globalThis;
+  Object.defineProperty(globalThis, "window", { value: mockWindow, configurable: true });
+  try {
+    const verified = await verifyAndPinPeerKey(
+      "sender-test-id", "recipient-test-id", recipientCreated.payload.publicKey, "recipient",
+    );
+    assert.ok(fingerprintsMatch(verified, recipientFingerprint));
+    // A pinned key is accepted without asking again.
+    promptFingerprint = "wrong fingerprint";
+    await verifyAndPinPeerKey(
+      "sender-test-id", "recipient-test-id", recipientCreated.payload.publicKey, "recipient",
+    );
+    // A replacement key is rejected against the originally pinned fingerprint.
+    await assert.rejects(
+      () => verifyAndPinPeerKey("sender-test-id", "recipient-test-id", senderCreated.payload.publicKey, "recipient"),
+      /SECURITY WARNING/,
+    );
+  } finally {
+    if (originalWindow) Object.defineProperty(globalThis, "window", { value: originalWindow, configurable: true });
+    else Reflect.deleteProperty(globalThis, "window");
+  }
+
   await assert.rejects(
     () => unwrapTransferKey(
       recipient.pair, transferId + "-changed", "sender-test-id", "recipient-test-id", "recipient",
