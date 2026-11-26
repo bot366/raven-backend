@@ -253,7 +253,7 @@ async function wrapFileKey(
   });
   const ciphertext = await context.seal(toArrayBuffer(fileKeyRaw));
   return {
-    userId,
+    userId: recipientId,
     keyVersion,
     enc: encodeBase64(context.enc),
     ciphertext: encodeBase64(ciphertext),
