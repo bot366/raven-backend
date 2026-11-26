@@ -343,6 +343,7 @@ export async function decryptTransferMetadata(
   chunkCount: number;
   noncePrefix: string;
 }> {
+  const metadataNonceValuePlaceholder = metadataNonce;
   const decrypted = await crypto.subtle.decrypt(
     {
       name: "AES-GCM",
@@ -356,13 +357,21 @@ export async function decryptTransferMetadata(
     version: number; filename: string; mimeType: string; originalSize: number;
     plaintextChunkSize: number; chunkCount: number; noncePrefix: string;
   };
+  const expectedChunkCount = Math.max(1, Math.ceil(value.originalSize / CHUNK_PLAINTEXT_SIZE));
   if (value.version !== 1 || !Number.isSafeInteger(value.originalSize) || value.originalSize < 0 ||
-      !Number.isSafeInteger(value.chunkCount) || value.chunkCount < 1 ||
+      !Number.isSafeInteger(value.chunkCount) || value.chunkCount !== expectedChunkCount ||
+      value.chunkCount > 0xffffffff ||
       value.plaintextChunkSize !== CHUNK_PLAINTEXT_SIZE ||
-      typeof value.filename !== "string" || value.filename.length < 1 || value.filename.length > 255) {
+      typeof value.filename !== "string" || value.filename.length < 1 || value.filename.length > 255 ||
+      typeof value.mimeType !== "string" || value.mimeType.length > 150) {
     throw new Error("The encrypted file metadata is invalid.");
   }
-  if (fromBase64(value.noncePrefix).length !== 8) throw new Error("The encrypted file nonce prefix is invalid.");
+  const noncePrefix = fromBase64(value.noncePrefix);
+  const metadataNonce = fromBase64(metadataNonceValuePlaceholder);
+  if (noncePrefix.length !== 8 || metadataNonce.length !== 12 ||
+      !makeChunkNonce(noncePrefix, 0xffffffff).every((byte, index) => byte === metadataNonce[index])) {
+    throw new Error("The encrypted file nonce metadata is invalid.");
+  }
   return value;
 }
 
