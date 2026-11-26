@@ -48,7 +48,9 @@ Use HPKE (RFC 9180) to encrypt the DEK separately to:
 1. The sender's public encryption key, so the sender can later open their sent file.
 2. The intended recipient's public encryption key, for direct account-to-account transfers.
 
-Initial cipher suite: DHKEM(P-256, HKDF-SHA256) / HKDF-SHA256 / AES-256-GCM. Use a maintained HPKE implementation rather than designing a custom key-wrapping protocol. The implementation currently evaluated is `@hpke/core`, which uses the Web Cryptography API and documents browser support. Its repository states that it has not been formally audited; that limitation must remain visible in the security notes.
+Use HPKE Auth mode for direct-transfer envelopes so the recipient can authenticate the sender's key, not Base mode alone. The recipient must verify that the sender public key is the one associated with the claimed account. A public-key directory controlled by the same server is vulnerable to key substitution; the UI should expose key fingerprints for out-of-band verification and clearly warn when a contact's key changes. Also include a unique transfer/message identifier and track processed transfer IDs so replayed envelope submissions can be rejected.
+
+Initial cipher suite: DHKEM(P-256, HKDF-SHA256) / HKDF-SHA256 / AES-256-GCM. Use a maintained HPKE implementation rather than designing a custom key-wrapping protocol. The implementation currently evaluated is `@hpke/core`, which uses the Web Cryptography API and documents browser support. Its repository states that it has passed HPKE/Wycheproof test vectors but has not been formally audited; that limitation must remain visible in the security notes.
 
 The API stores only the HPKE encapsulated value and ciphertext envelope. It must never receive the DEK or a plaintext private key.
 
@@ -61,7 +63,7 @@ The API stores only the HPKE encapsulated value and ciphertext envelope. It must
 - Keep an imported non-extractable private CryptoKey in IndexedDB on a device after the user unlocks it.
 - A new device or cleared browser profile must require the recovery code to restore the private key. RAVEN cannot recover the key if both the local copy and recovery code are lost. This is an intentional consequence of server-blind encryption.
 - The recovery code must be displayed once, with a download/copy option and a confirmation step. Never log it or send it to the API.
-- Public-key changes must be versioned and shown to users. A key fingerprint should be available for out-of-band verification.
+- Public-key changes must be versioned and shown to users. A key fingerprint should be available for out-of-band verification. Do not silently trust a changed key from the server directory.
 
 ### Public share links
 
