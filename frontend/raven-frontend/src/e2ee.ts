@@ -369,6 +369,13 @@ function normalizeFingerprint(value: string): string {
   return value.replace(/[^a-f0-9]/gi, "").toUpperCase();
 }
 
+export function fingerprintsMatch(expected: string, actual: string): boolean {
+  const normalizedExpected = normalizeFingerprint(expected);
+  const normalizedActual = normalizeFingerprint(actual);
+  return normalizedExpected.length === 64 && normalizedActual.length === 64 &&
+    normalizedExpected === normalizedActual;
+}
+
 export async function verifyAndPinPeerKey(
   localUserId: string,
   peerUserId: string,
@@ -380,7 +387,7 @@ export async function verifyAndPinPeerKey(
   const storageKey = "raven:e2ee:peer-key:" + localUserId + ":" + peerUserId;
   const pinned = window.localStorage.getItem(storageKey);
   if (pinned) {
-    if (normalizeFingerprint(pinned) !== normalizeFingerprint(fingerprint)) {
+    if (!fingerprintsMatch(pinned, fingerprint)) {
       throw new Error(
         "SECURITY WARNING: " + peerLabel + "'s encryption key has changed since you verified it. Do not send or decrypt files until you confirm the new fingerprint with them through a separate trusted channel."
       );
@@ -393,7 +400,7 @@ export async function verifyAndPinPeerKey(
     "Fingerprint shown by RAVEN:\n" + fingerprint + "\n\n" +
     "Paste the fingerprint they gave you. Do not accept this key based only on what RAVEN displays."
   );
-  if (!expected || normalizeFingerprint(expected) !== normalizeFingerprint(fingerprint)) {
+  if (!expected || !fingerprintsMatch(expected, fingerprint)) {
     throw new Error("Fingerprint verification failed. No key was trusted and the transfer was stopped.");
   }
   window.localStorage.setItem(storageKey, fingerprint);
