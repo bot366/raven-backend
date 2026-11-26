@@ -126,6 +126,8 @@ export async function createEncryptionIdentity(): Promise<{
     toArrayBuffer(privateRaw),
   );
   const recoveryCode = recoveryCodeFromBytes(codeBytes);
+  privateRaw.fill(0);
+  codeBytes.fill(0);
   const identity = { pair, publicKey: encodeBase64(publicRaw), keyVersion: 1 };
   return {
     payload: {
@@ -217,10 +219,12 @@ export async function createTransferEncryptionSession(
   const recipientPublicKey = await suite.kem.deserializePublicKey(toArrayBuffer(fromBase64(recipientPublicKeyRaw)));
   const senderEnvelope = await wrapFileKey(fileKeyRaw, senderPair.publicKey, senderPair, senderId, senderKeyVersion);
   const recipientEnvelope = await wrapFileKey(fileKeyRaw, recipientPublicKey, senderPair, recipientId, recipientKeyVersion);
+  fileKeyRaw.fill(0);
   const plaintextChunkSize = CHUNK_PLAINTEXT_SIZE;
   const chunkCount = Math.max(1, Math.ceil(file.size / plaintextChunkSize));
   const noncePrefix = randomBytes(8);
-  const metadataNonce = randomBytes(12);
+  // Reserve the final uint32 nonce counter exclusively for metadata.
+  const metadataNonce = makeChunkNonce(noncePrefix, 0xffffffff);
   const metadata = {
     version: 1,
     filename: file.name,
