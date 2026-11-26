@@ -108,14 +108,49 @@ async function recoveryAesKey(codeBytes: Uint8Array, salt: Uint8Array): Promise<
   );
 }
 
+
+async function assertKeyPairMatches(pair: CryptoKeyPair): Promise<void> {
+  if (pair.privateKey.extractable) {
+    throw new Error("The account private key must be non-exportable while unlocked.");
+  }
+  const challenge = randomBytes(32);
+  const info = aad("RAVEN:IDENTITY-PAIR-CHECK:v1");
+  const senderContext = await suite.createSenderContext({
+    recipientPublicKey: pair.publicKey,
+    senderKey: pair,
+    info,
+  });
+  const ciphertext = await senderContext.seal(toArrayBuffer(challenge));
+  const recipientContext = await suite.createRecipientContext({
+    recipientKey: pair.privateKey,
+    enc: senderContext.enc,
+    senderPublicKey: pair.publicKey,
+    info,
+  });
+  let opened: ArrayBuffer;
+  try {
+    opened = await recipientContext.open(ciphertext);
+  } catch {
+    throw new Error("The private encryption key does not match this account's public key.");
+  }
+  const actual = new Uint8Array(opened);
+  let difference = actual.length ^ challenge.length;
+  for (let index = 0; index < Math.min(actual.length, challenge.length); index++) {
+    difference |= actual[index] ^ challenge[index];
+  }
+  challenge.fill(0);
+  actual.fill(0);
+  if (difference !== 0) throw new Error("The encryption identity failed its key-pair self-check.");
+}
+
 export async function createEncryptionIdentity(): Promise<{
   payload: { publicKey: string; encryptedPrivateKey: string; recoverySalt: string; recoveryNonce: string };
   recoveryCode: string;
   identity: EncryptionIdentity;
 }> {
-  const pair = await suite.kem.generateKeyPair();
-  const publicRaw = new Uint8Array(await suite.kem.serializePublicKey(pair.publicKey));
-  const privateRaw = new Uint8Array(await suite.kem.serializePrivateKey(pair.privateKey));
+  const generatedPair = await suite.kem.generateKeyPair();
+  const publicRaw = new Uint8Array(await suite.kem.serializePublicKey(generatedPair.publicKey));
+  const privatePkcs8 = new Uint8Array(await crypto.subtle.exportKey("pkcs8", generatedPair.privateKey));
   const codeBytes = randomBytes(32);
   const recoverySalt = randomBytes(16);
   const recoveryNonce = randomBytes(12);
@@ -123,11 +158,20 @@ export async function createEncryptionIdentity(): Promise<{
   const encryptedPrivate = await crypto.subtle.encrypt(
     { name: "AES-GCM", iv: toArrayBuffer(recoveryNonce), additionalData: aad("RAVEN:PRIVATE-KEY:1") },
     recoveryKey,
-    toArrayBuffer(privateRaw),
+    toArrayBuffer(privatePkcs8),
   );
   const recoveryCode = recoveryCodeFromBytes(codeBytes);
-  privateRaw.fill(0);
+  const nonExportablePrivateKey = await crypto.subtle.importKey(
+    "pkcs8",
+    toArrayBuffer(privatePkcs8),
+    { name: "ECDH", namedCurve: "P-256" },
+    false,
+    ["deriveBits"],
+  );
+  privatePkcs8.fill(0);
   codeBytes.fill(0);
+  const pair: CryptoKeyPair = { publicKey: generatedPair.publicKey, privateKey: nonExportablePrivateKey };
+  await assertKeyPairMatches(pair);
   const identity = { pair, publicKey: encodeBase64(publicRaw), keyVersion: 1 };
   return {
     payload: {
@@ -163,9 +207,17 @@ export async function unlockEncryptionIdentity(
     throw new Error("That recovery code is incorrect or the encrypted key backup is damaged.");
   }
   const publicKey = await suite.kem.deserializePublicKey(toArrayBuffer(fromBase64(key.public_key)));
-  const privateKey = await suite.kem.deserializePrivateKey(privateRaw);
+  const privateKey = await crypto.subtle.importKey(
+    "pkcs8",
+    privateRaw,
+    { name: "ECDH", namedCurve: "P-256" },
+    false,
+    ["deriveBits"],
+  );
+  const pair: CryptoKeyPair = { publicKey, privateKey };
+  await assertKeyPairMatches(pair);
   const identity = {
-    pair: { publicKey, privateKey },
+    pair,
     publicKey: key.public_key,
     keyVersion: Number(key.key_version),
   };
