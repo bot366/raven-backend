@@ -84,7 +84,7 @@ async function decryptAndDownloadTransfer(transferId: string, userId: string): P
     }
   }
   const fileKey = await unwrapTransferKey(
-    pair, transferId, userId, purpose, envelope.enc, envelope.ciphertext, envelope.sender_public_key
+    pair, transferId, envelope.sender_user_id, userId, purpose, envelope.enc, envelope.ciphertext, envelope.sender_public_key
   );
   const metadata = await decryptTransferMetadata(fileKey, transferId, envelope.encrypted_metadata, envelope.metadata_nonce);
   const response = await fetch(API + "/transfers/" + encodeURIComponent(transferId) + "/download", { credentials: "include" });
