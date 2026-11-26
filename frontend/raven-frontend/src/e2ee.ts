@@ -189,11 +189,13 @@ async function wrapFileKey(
   senderPair: CryptoKeyPair,
   userId: string,
   keyVersion: number,
+  transferId: string,
+  purpose: "sender" | "recipient",
 ): Promise<KeyEnvelope> {
   const context = await suite.createSenderContext({
     recipientPublicKey,
     senderKey: senderPair,
-    info: aad("RAVEN transfer key envelope v1"),
+    info: aad("RAVEN:FILE-KEY:1:" + transferId + ":" + userId + ":" + purpose),
   });
   const ciphertext = await context.seal(toArrayBuffer(fileKeyRaw));
   return {
@@ -217,8 +219,8 @@ export async function createTransferEncryptionSession(
   const fileKeyRaw = randomBytes(32);
   const fileKey = await crypto.subtle.importKey("raw", toArrayBuffer(fileKeyRaw), "AES-GCM", false, ["encrypt", "decrypt"]);
   const recipientPublicKey = await suite.kem.deserializePublicKey(toArrayBuffer(fromBase64(recipientPublicKeyRaw)));
-  const senderEnvelope = await wrapFileKey(fileKeyRaw, senderPair.publicKey, senderPair, senderId, senderKeyVersion);
-  const recipientEnvelope = await wrapFileKey(fileKeyRaw, recipientPublicKey, senderPair, recipientId, recipientKeyVersion);
+  const senderEnvelope = await wrapFileKey(fileKeyRaw, senderPair.publicKey, senderPair, senderId, senderKeyVersion, transferId, "sender");
+  const recipientEnvelope = await wrapFileKey(fileKeyRaw, recipientPublicKey, senderPair, recipientId, recipientKeyVersion, transferId, "recipient");
   fileKeyRaw.fill(0);
   const plaintextChunkSize = CHUNK_PLAINTEXT_SIZE;
   const chunkCount = Math.max(1, Math.ceil(file.size / plaintextChunkSize));
@@ -312,6 +314,9 @@ export async function decryptTransferMetadata(
 
 export async function unwrapTransferKey(
   pair: CryptoKeyPair,
+  transferId: string,
+  recipientUserId: string,
+  purpose: "sender" | "recipient",
   enc: string,
   ciphertext: string,
   senderPublicKeyRaw: string,
@@ -321,7 +326,7 @@ export async function unwrapTransferKey(
     recipientKey: pair.privateKey,
     enc: toArrayBuffer(fromBase64(enc)),
     senderPublicKey,
-    info: aad("RAVEN transfer key envelope v1"),
+    info: aad("RAVEN:FILE-KEY:1:" + transferId + ":" + recipientUserId + ":" + purpose),
   });
   const fileKeyRaw = await context.open(toArrayBuffer(fromBase64(ciphertext)));
   if (fileKeyRaw.byteLength !== 32) throw new Error("The transfer encryption key is invalid.");
@@ -347,4 +352,50 @@ export async function decryptTransferChunk(
     ciphertext,
   );
   return new Uint8Array(plaintext);
+}
+
+
+export async function getKeyFingerprint(publicKeyRaw: string): Promise<string> {
+  const publicBytes = fromBase64(publicKeyRaw);
+  if (publicBytes.length !== 65 || publicBytes[0] !== 4) {
+    throw new Error("The account public key has an invalid P-256 encoding.");
+  }
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", toArrayBuffer(publicBytes)));
+  const hex = Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("").toUpperCase();
+  return hex.match(/.{1,4}/g)?.join(" ") ?? hex;
+}
+
+function normalizeFingerprint(value: string): string {
+  return value.replace(/[^a-f0-9]/gi, "").toUpperCase();
+}
+
+export async function verifyAndPinPeerKey(
+  localUserId: string,
+  peerUserId: string,
+  publicKeyRaw: string,
+  peerLabel: string,
+): Promise<string> {
+  if (localUserId === peerUserId) return getKeyFingerprint(publicKeyRaw);
+  const fingerprint = await getKeyFingerprint(publicKeyRaw);
+  const storageKey = "raven:e2ee:peer-key:" + localUserId + ":" + peerUserId;
+  const pinned = window.localStorage.getItem(storageKey);
+  if (pinned) {
+    if (normalizeFingerprint(pinned) !== normalizeFingerprint(fingerprint)) {
+      throw new Error(
+        "SECURITY WARNING: " + peerLabel + "'s encryption key has changed since you verified it. Do not send or decrypt files until you confirm the new fingerprint with them through a separate trusted channel."
+      );
+    }
+    return fingerprint;
+  }
+
+  const expected = window.prompt(
+    "Verify " + peerLabel + "'s encryption fingerprint through a separate trusted channel (for example, a voice call or in person).\n\n" +
+    "Fingerprint shown by RAVEN:\n" + fingerprint + "\n\n" +
+    "Paste the fingerprint they gave you. Do not accept this key based only on what RAVEN displays."
+  );
+  if (!expected || normalizeFingerprint(expected) !== normalizeFingerprint(fingerprint)) {
+    throw new Error("Fingerprint verification failed. No key was trusted and the transfer was stopped.");
+  }
+  window.localStorage.setItem(storageKey, fingerprint);
+  return fingerprint;
 }
