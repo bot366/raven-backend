@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState, type ChangeEvent, type DragEv
 import {
   cacheEncryptionIdentity, createEncryptionIdentity, createTransferEncryptionSession,
   decryptTransferChunk, decryptTransferMetadata, encodeBase64, getCachedEncryptionIdentity,
-  encryptTransferChunk, unlockEncryptionIdentity, unwrapTransferKey,
+  encryptTransferChunk, getKeyFingerprint, unlockEncryptionIdentity, unwrapTransferKey,
+  verifyAndPinPeerKey,
   type StoredEncryptionKey, type TransferEncryptionSession
 } from "./e2ee.js";
 
@@ -61,16 +62,30 @@ async function requireUnlockedEncryptionIdentity(userId: string): Promise<{ pair
 async function decryptAndDownloadTransfer(transferId: string, userId: string): Promise<void> {
   const { pair } = await requireUnlockedEncryptionIdentity(userId);
   const envelopeResponse = await api<{ envelope: {
+    id: string;
     encryption_version: number;
     encrypted_metadata: string;
     metadata_nonce: string;
     enc: string;
     ciphertext: string;
+    sender_user_id: string;
     sender_public_key: string;
   } }>("/transfers/" + encodeURIComponent(transferId) + "/envelope");
   const envelope = envelopeResponse.envelope;
-  if (envelope.encryption_version !== 1) throw new Error("This transfer does not use the supported encrypted format.");
-  const fileKey = await unwrapTransferKey(pair, envelope.enc, envelope.ciphertext, envelope.sender_public_key);
+  if (envelope.encryption_version !== 1 || envelope.id !== transferId) throw new Error("This transfer does not use the supported encrypted format.");
+  const purpose = envelope.sender_user_id === userId ? "sender" : "recipient";
+  if (purpose === "recipient") {
+    const senderFingerprint = await verifyAndPinPeerKey(userId, envelope.sender_user_id, envelope.sender_public_key, "the sender");
+    void senderFingerprint;
+  } else {
+    const ownKey = await api<{ key: StoredEncryptionKey | null }>("/encryption/keys/me");
+    if (!ownKey.key || ownKey.key.public_key !== envelope.sender_public_key) {
+      throw new Error("SECURITY WARNING: your account's published encryption key does not match this transfer. Decryption stopped.");
+    }
+  }
+  const fileKey = await unwrapTransferKey(
+    pair, transferId, userId, purpose, envelope.enc, envelope.ciphertext, envelope.sender_public_key
+  );
   const metadata = await decryptTransferMetadata(fileKey, transferId, envelope.encrypted_metadata, envelope.metadata_nonce);
   const response = await fetch(API + "/transfers/" + encodeURIComponent(transferId) + "/download", { credentials: "include" });
   if (!response.ok) throw new Error("Could not retrieve the encrypted file (" + response.status + ").");
@@ -642,6 +657,7 @@ function SendModal({ userId, onClose, onComplete }: { userId: string; onClose: (
         "/encryption/keys/" + encodeURIComponent(resolvedRecipient.id) + "/public"
       );
       const recipientKey = recipientKeyResult.key;
+      await verifyAndPinPeerKey(userId, recipientKey.user_id, recipientKey.public_key, "the recipient");
 
       if (!activeId) {
         const chunkCount = Math.max(1, Math.ceil(selected.size / CHUNK_SIZE));
