@@ -442,6 +442,7 @@ function EncryptionSettings({ userId }: { userId: string }) {
   const [recoveryCode, setRecoveryCode] = useState("");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [fingerprint, setFingerprint] = useState("");
   const unlocked = Boolean(getCachedEncryptionIdentity(userId));
 
   const reloadKey = async () => {
@@ -455,6 +456,16 @@ function EncryptionSettings({ userId }: { userId: string }) {
     } finally { setLoading(false); }
   };
   useEffect(() => { void reloadKey(); }, [userId]);
+  useEffect(() => {
+    let active = true;
+    if (!keyRecord) { setFingerprint(""); return; }
+    void getKeyFingerprint(keyRecord.public_key)
+      .then((value) => { if (active) setFingerprint(value); })
+      .catch((fingerprintError) => {
+        if (active) setError(fingerprintError instanceof Error ? fingerprintError.message : "Could not calculate your key fingerprint.");
+      });
+    return () => { active = false; };
+  }, [keyRecord]);
 
   const setup = async () => {
     setBusy(true); setError(""); setMessage("");
@@ -484,6 +495,12 @@ function EncryptionSettings({ userId }: { userId: string }) {
       setError(unlockError instanceof Error ? unlockError.message : "Could not unlock encryption.");
     } finally { setBusy(false); }
   };
+  const copyFingerprint = async () => {
+    try {
+      await navigator.clipboard.writeText(fingerprint);
+      setMessage("Fingerprint copied. Share it through a separate trusted channel.");
+    } catch { setError("Clipboard access is unavailable. Select and copy the fingerprint manually."); }
+  };
   const copyCode = async () => {
     try {
       await navigator.clipboard.writeText(recoveryCode);
@@ -495,6 +512,7 @@ function EncryptionSettings({ userId }: { userId: string }) {
     <div className="section-heading"><div><span className="section-kicker">PRIVATE FILE TRANSFERS</span><h2>End-to-end encryption</h2></div><span className="count-pill">{keyRecord ? "Key created" : "Not configured"}</span></div>
     <p>Files sent directly to another RAVEN account can be encrypted in your browser. RAVEN stores the encrypted file and encrypted key copies, not your readable private key.</p>
     {loading ? <LoadingLine/> : !keyRecord ? <div className="settings-block"><div><h3>Set up your encryption identity</h3><p>You and the person receiving a file must each set this up before encrypted transfers are possible.</p></div><button className="primary-button compact-button" type="button" disabled={busy} onClick={() => void setup()}>{busy ? "Setting up…" : "Set up encryption"}</button></div> : <div className="settings-block"><div><h3>Your encryption identity</h3><p>{unlocked ? "Unlocked in this browser tab." : "Your private key is locked. Enter your recovery code to use encrypted transfers."}</p></div><button className="outline-button" type="button" disabled={busy || unlocked} onClick={() => void unlock()}>{busy ? "Please wait…" : unlocked ? "Unlocked" : "Unlock encryption"}</button></div>}
+    {keyRecord && fingerprint && <div className="settings-block"><div><h3>Your public-key fingerprint</h3><p>Share this fingerprint with people who send you files. They should compare it with you through a separate trusted channel before accepting your encryption key.</p></div><div className="username-edit"><textarea className="recovery-code-field" value={fingerprint} readOnly rows={2}/><button className="outline-button" type="button" onClick={() => void copyFingerprint()}>Copy fingerprint</button></div></div>}
     {recoveryCode && <div className="settings-block"><div><h3>Save your recovery code</h3><p>This is the only way to restore your private encryption key on another device. Losing it may make encrypted files permanently unreadable.</p></div><div className="username-edit"><textarea className="recovery-code-field" value={recoveryCode} readOnly rows={2}/><button className="outline-button" type="button" onClick={() => void copyCode()}>Copy recovery code</button><button className="primary-button compact-button" type="button" onClick={() => setRecoveryCode("")}>I've saved it</button></div></div>}
     {message && <div className="success-message"><Icon name="check"/>{message}</div>}
     {error && <div className="form-alert" role="alert">{error}</div>}
