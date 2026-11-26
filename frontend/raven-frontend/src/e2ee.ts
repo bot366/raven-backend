@@ -81,8 +81,8 @@ function recoveryCodeBytes(code: string): Uint8Array {
   if (decoded.length !== 32) throw new Error("The recovery code must contain 32 bytes.");
   return decoded;
 }
-function aad(value: string): Uint8Array {
-  return textEncoder.encode(value);
+function aad(value: string): ArrayBuffer {
+  return textEncoder.encode(value).buffer as ArrayBuffer;
 }
 function makeChunkNonce(prefix: Uint8Array, index: number): Uint8Array {
   if (prefix.length !== 8 || !Number.isSafeInteger(index) || index < 0 || index > 0xffffffff) {
