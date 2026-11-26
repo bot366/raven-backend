@@ -45,6 +45,14 @@ test("RAVEN E2EE identity recovery, HPKE key envelopes and AES-GCM file chunks r
     () => unlockEncryptionIdentity("sender-test-id", storedSenderKey, "A".repeat(43)),
     /recovery code is incorrect/i,
   );
+  await assert.rejects(
+    () => unlockEncryptionIdentity(
+      "sender-test-id",
+      { ...storedSenderKey, public_key: recipientCreated.payload.publicKey },
+      senderCreated.recoveryCode,
+    ),
+    /does not match/i,
+  );
 
   const originalText = "RAVEN end-to-end encrypted transfer test.";
   const originalBytes = new TextEncoder().encode(originalText);
@@ -122,6 +130,12 @@ test("RAVEN E2EE identity recovery, HPKE key envelopes and AES-GCM file chunks r
     ),
   );
 
+  await assert.rejects(
+    () => decryptTransferMetadata(
+      recipientFileKey, transferId, session.encryptedMetadata,
+      encodeBase64(new Uint8Array(12)),
+    ),
+  );
   const metadata = await decryptTransferMetadata(
     recipientFileKey,
     transferId,
