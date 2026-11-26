@@ -20,7 +20,8 @@ type ReceivedTransferRow = TransferRow & {
 
 function publicTransfer(row:TransferRow){
  return {
-  id:row.id,filename:row.filename,filesize:Number(row.filesize),status:row.status,
+  id:row.id,filename:row.encryption_version===1?"Encrypted file":row.filename,filesize:Number(row.filesize),status:row.status,
+  encryptionVersion:row.encryption_version??0,
   createdAt:row.created_at,uploadedAt:row.uploaded_at,expiresAt:row.expires_at,
   downloadUrl:row.status==="completed"?config.publicBaseUrl+"/transfers/"+row.id+"/download":null,
   shareUrl:row.share_token?config.publicBaseUrl+"/share/"+row.share_token:null,
@@ -362,16 +363,20 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
   const recipient=found.rows[0];
   if(!recipient)return reply.code(404).send({error:"No RAVEN account was found with that username or email."});
   if(recipient.id===user.id)return reply.code(400).send({error:"You cannot send a file to your own account."});
-  return {user:{displayName:recipient.display_name,username:recipient.username}};
+  return {user:{id:recipient.id,displayName:recipient.display_name,username:recipient.username}};
  });
 
- app.post<{Body:{filename?:string;filesize?:number;recipientIdentifier?:string}}>("/transfers",async(request,reply)=>{
+ app.post<{Body:{filename?:string;filesize?:number;recipientIdentifier?:string;encryptionVersion?:number}}>("/transfers",async(request,reply)=>{
   const user=await requireUser(request,reply);if(!user)return;
   const filename=request.body?.filename?.trim();
   const filesize=request.body?.filesize??0;
   const recipientIdentifier=typeof request.body?.recipientIdentifier==="string"?request.body.recipientIdentifier.trim().toLowerCase().replace(/^@/,""):"";
+  const encryptionVersion=request.body?.encryptionVersion??0;
   if(!filename||filename.length>255)return reply.code(400).send({error:"A filename between 1 and 255 characters is required."});
   if(!Number.isSafeInteger(filesize)||filesize<0||filesize>config.maxFileSizeBytes)return reply.code(400).send({error:"Invalid file size."});
+  if(encryptionVersion!==0&&encryptionVersion!==1)return reply.code(400).send({error:"Unsupported encryption format."});
+  if(encryptionVersion===1&&!recipientIdentifier)return reply.code(400).send({error:"End-to-end encrypted transfers require a RAVEN recipient account."});
+  if(encryptionVersion===1&&filename!=="Encrypted file")return reply.code(400).send({error:"Encrypted transfers must not send plaintext filenames to the server."});
 
   let recipientId:string|null=null;
   if(recipientIdentifier){
@@ -390,9 +395,16 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
   }
 
   const expires=new Date(Date.now()+config.expiryHours*3600000);
+  if(encryptionVersion===1){
+   const keyCheck=await query(
+    "SELECT COUNT(*)::int AS count FROM user_encryption_keys WHERE user_id=ANY($1::uuid[])",
+    [[user.id,recipientId]]
+   );
+   if(Number(keyCheck.rows[0]?.count)!==2)return reply.code(409).send({error:"Both accounts must set up end-to-end encryption before sending files."});
+  }
   const r=await query<TransferRow>(
-   "INSERT INTO transfers(user_id,recipient_user_id,filename,filesize,status,expires_at) VALUES($1,$2,$3,$4,'pending',$5) RETURNING *",
-   [user.id,recipientId,filename,filesize,expires]
+   "INSERT INTO transfers(user_id,recipient_user_id,filename,filesize,status,expires_at,encryption_version) VALUES($1,$2,$3,$4,'pending',$5,$6) RETURNING *",
+   [user.id,recipientId,filename,filesize,expires,encryptionVersion]
   );
   return reply.code(201).send({message:"Transfer session created.",transfer:publicTransfer(r.rows[0])});
  });
