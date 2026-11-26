@@ -86,7 +86,7 @@ async function decryptAndDownloadTransfer(transferId: string, userId: string): P
     const cipherBytes = await encryptedBlob.slice(offset, offset + cipherSize).arrayBuffer();
     const plaintext = await decryptTransferChunk(fileKey, transferId, index, metadata.chunkCount, metadata.noncePrefix, cipherBytes);
     if (plaintext.length !== plainSize) throw new Error("A decrypted chunk has an unexpected size.");
-    pieces.push(plaintext);
+    pieces.push(plaintext.buffer.slice(plaintext.byteOffset, plaintext.byteOffset + plaintext.byteLength) as ArrayBuffer);
     offset += cipherSize;
     recoveredSize += plaintext.length;
   }
@@ -717,7 +717,7 @@ function SendModal({ userId, onClose, onComplete }: { userId: string; onClose: (
           const offset = index * session.plaintextChunkSize;
           const plaintext = selected.slice(offset, Math.min(selected.size, offset + session.plaintextChunkSize));
           const encryptedBytes = await encryptTransferChunk(session, activeId!, index, plaintext);
-          const encryptedBlob = new Blob([encryptedBytes], { type: "application/octet-stream" });
+          const encryptedBlob = new Blob([encryptedBytes.buffer.slice(encryptedBytes.byteOffset, encryptedBytes.byteOffset + encryptedBytes.byteLength) as ArrayBuffer], { type: "application/octet-stream" });
           const digestBytes = await crypto.subtle.digest("SHA-256", await encryptedBlob.arrayBuffer());
           const digest = Array.from(new Uint8Array(digestBytes), (byte) => byte.toString(16).padStart(2, "0")).join("");
           let lastError: unknown = null;
