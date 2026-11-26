@@ -10,6 +10,8 @@ import {
   decryptTransferChunk,
   unwrapTransferKey,
   encodeBase64,
+  getKeyFingerprint,
+  fingerprintsMatch,
   type StoredEncryptionKey,
 } from "../src/e2ee.ts";
 
@@ -64,13 +66,25 @@ test("RAVEN E2EE identity recovery, HPKE key envelopes and AES-GCM file chunks r
   assert.ok(recipientEnvelope);
 
   const senderFileKey = await unwrapTransferKey(
-    sender.pair, senderEnvelope.enc, senderEnvelope.ciphertext, senderCreated.payload.publicKey,
+    sender.pair, transferId, "sender-test-id", "sender", senderEnvelope.enc, senderEnvelope.ciphertext, senderCreated.payload.publicKey,
   );
   const recipientFileKey = await unwrapTransferKey(
-    recipient.pair, recipientEnvelope.enc, recipientEnvelope.ciphertext, senderCreated.payload.publicKey,
+    recipient.pair, transferId, "recipient-test-id", "recipient", recipientEnvelope.enc, recipientEnvelope.ciphertext, senderCreated.payload.publicKey,
   );
   await assert.rejects(
-    () => unwrapTransferKey(sender.pair, recipientEnvelope.enc, recipientEnvelope.ciphertext, senderCreated.payload.publicKey),
+    () => unwrapTransferKey(sender.pair, transferId, "sender-test-id", "sender", recipientEnvelope.enc, recipientEnvelope.ciphertext, senderCreated.payload.publicKey),
+  );
+
+  const senderFingerprint = await getKeyFingerprint(senderCreated.payload.publicKey);
+  const recipientFingerprint = await getKeyFingerprint(recipientCreated.payload.publicKey);
+  assert.equal(senderFingerprint.length, 79);
+  assert.ok(fingerprintsMatch(senderFingerprint, senderFingerprint.toLowerCase().replace(/ /g, "-")));
+  assert.ok(!fingerprintsMatch(senderFingerprint, recipientFingerprint));
+  await assert.rejects(
+    () => unwrapTransferKey(
+      recipient.pair, transferId + "-changed", "recipient-test-id", "recipient",
+      recipientEnvelope.enc, recipientEnvelope.ciphertext, senderCreated.payload.publicKey,
+    ),
   );
 
   const metadata = await decryptTransferMetadata(
