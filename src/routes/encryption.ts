@@ -158,7 +158,7 @@ export async function encryptionRoutes(app: FastifyInstance): Promise<void> {
     const user = await requireUser(request, reply);
     if (!user) return;
     const result = await query(
-      `SELECT t.id, t.encryption_version, t.encrypted_metadata, t.metadata_nonce,
+      `SELECT t.id, t.user_id AS sender_user_id, t.encryption_version, t.encrypted_metadata, t.metadata_nonce,
               e.key_version, e.enc, e.ciphertext, sender.public_key AS sender_public_key
        FROM transfers t
        JOIN transfer_key_envelopes e ON e.transfer_id=t.id AND e.user_id=$2
