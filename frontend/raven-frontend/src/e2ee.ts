@@ -52,7 +52,7 @@ export type TransferEncryptionSession = {
 function randomBytes(length: number): Uint8Array {
   return crypto.getRandomValues(new Uint8Array(length));
 }
-function toBase64(input: ArrayBuffer | ArrayBufferView): string {
+export function encodeBase64(input: ArrayBuffer | ArrayBufferView): string {
   const bytes = input instanceof ArrayBuffer
     ? new Uint8Array(input)
     : new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
@@ -72,7 +72,7 @@ function toArrayBuffer(value: Uint8Array): ArrayBuffer {
   return value.slice().buffer;
 }
 function recoveryCodeFromBytes(bytes: Uint8Array): string {
-  return toBase64(bytes).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+  return encodeBase64(bytes).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
 function recoveryCodeBytes(code: string): Uint8Array {
   const normalized = code.trim().replace(/-/g, "+").replace(/_/g, "/");
@@ -126,13 +126,13 @@ export async function createEncryptionIdentity(): Promise<{
     toArrayBuffer(privateRaw),
   );
   const recoveryCode = recoveryCodeFromBytes(codeBytes);
-  const identity = { pair, publicKey: toBase64(publicRaw), keyVersion: 1 };
+  const identity = { pair, publicKey: encodeBase64(publicRaw), keyVersion: 1 };
   return {
     payload: {
       publicKey: identity.publicKey,
-      encryptedPrivateKey: toBase64(encryptedPrivate),
-      recoverySalt: toBase64(recoverySalt),
-      recoveryNonce: toBase64(recoveryNonce),
+      encryptedPrivateKey: encodeBase64(encryptedPrivate),
+      recoverySalt: encodeBase64(recoverySalt),
+      recoveryNonce: encodeBase64(recoveryNonce),
     },
     recoveryCode,
     identity,
@@ -197,8 +197,8 @@ async function wrapFileKey(
   return {
     userId,
     keyVersion,
-    enc: toBase64(context.enc),
-    ciphertext: toBase64(ciphertext),
+    enc: encodeBase64(context.enc),
+    ciphertext: encodeBase64(ciphertext),
   };
 }
 
@@ -228,7 +228,7 @@ export async function createTransferEncryptionSession(
     originalSize: file.size,
     plaintextChunkSize,
     chunkCount,
-    noncePrefix: toBase64(noncePrefix),
+    noncePrefix: encodeBase64(noncePrefix),
   };
   const encryptedMetadata = await crypto.subtle.encrypt(
     {
@@ -243,7 +243,7 @@ export async function createTransferEncryptionSession(
     fileKey,
     noncePrefix,
     metadataNonce,
-    encryptedMetadata: toBase64(encryptedMetadata),
+    encryptedMetadata: encodeBase64(encryptedMetadata),
     envelopes: [senderEnvelope, recipientEnvelope],
     chunkCount,
     cipherSize: file.size + chunkCount * 16,
