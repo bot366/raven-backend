@@ -1,4 +1,10 @@
 import { useCallback, useEffect, useRef, useState, type ChangeEvent, type DragEvent, type FormEvent } from "react";
+import {
+  cacheEncryptionIdentity, createEncryptionIdentity, createTransferEncryptionSession,
+  decryptTransferChunk, decryptTransferMetadata, encodeBase64, getCachedEncryptionIdentity,
+  encryptTransferChunk, unlockEncryptionIdentity, unwrapTransferKey,
+  type StoredEncryptionKey, type TransferEncryptionSession
+} from "./e2ee.js";
 
 type User = {
   id: string;
@@ -18,6 +24,7 @@ type Transfer = {
   senderName?: string;
   senderUsername?: string | null;
   senderEmail?: string;
+  encryptionVersion?: number;
 };
 type Page = "overview" | "sent" | "received" | "links" | "settings";
 type Health = "checking" | "online" | "offline";
@@ -34,6 +41,72 @@ async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   if (!response.ok) throw new Error(body?.error || "Request failed (" + response.status + ").");
   return body as T;
 }
+
+
+async function requireUnlockedEncryptionIdentity(userId: string): Promise<{ pair: CryptoKeyPair; keyVersion: number }> {
+  const response = await api<{ key: StoredEncryptionKey | null }>("/encryption/keys/me");
+  if (!response.key) {
+    throw new Error("Set up end-to-end encryption in Settings before sending or opening encrypted files.");
+  }
+  let pair = getCachedEncryptionIdentity(userId);
+  if (!pair) {
+    const recoveryCode = window.prompt("Enter your RAVEN encryption recovery code. It is never sent to the server.");
+    if (!recoveryCode) throw new Error("Encryption is locked. Open Settings to unlock it with your recovery code.");
+    const identity = await unlockEncryptionIdentity(userId, response.key, recoveryCode);
+    pair = identity.pair;
+  }
+  return { pair, keyVersion: Number(response.key.key_version) };
+}
+
+async function decryptAndDownloadTransfer(transferId: string, userId: string): Promise<void> {
+  const { pair } = await requireUnlockedEncryptionIdentity(userId);
+  const envelopeResponse = await api<{ envelope: {
+    encryption_version: number;
+    encrypted_metadata: string;
+    metadata_nonce: string;
+    enc: string;
+    ciphertext: string;
+    sender_public_key: string;
+  } }>("/transfers/" + encodeURIComponent(transferId) + "/envelope");
+  const envelope = envelopeResponse.envelope;
+  if (envelope.encryption_version !== 1) throw new Error("This transfer does not use the supported encrypted format.");
+  const fileKey = await unwrapTransferKey(pair, envelope.enc, envelope.ciphertext, envelope.sender_public_key);
+  const metadata = await decryptTransferMetadata(fileKey, transferId, envelope.encrypted_metadata, envelope.metadata_nonce);
+  const response = await fetch(API + "/transfers/" + encodeURIComponent(transferId) + "/download", { credentials: "include" });
+  if (!response.ok) throw new Error("Could not retrieve the encrypted file (" + response.status + ").");
+  const encryptedBlob = await response.blob();
+  const expectedCipherSize = metadata.originalSize + metadata.chunkCount * 16;
+  if (encryptedBlob.size !== expectedCipherSize) throw new Error("Encrypted file size does not match its authenticated metadata.");
+  const pieces: BlobPart[] = [];
+  let offset = 0;
+  let recoveredSize = 0;
+  for (let index = 0; index < metadata.chunkCount; index++) {
+    const plainSize = Math.min(metadata.plaintextChunkSize, metadata.originalSize - index * metadata.plaintextChunkSize);
+    const cipherSize = plainSize + 16;
+    const cipherBytes = await encryptedBlob.slice(offset, offset + cipherSize).arrayBuffer();
+    const plaintext = await decryptTransferChunk(fileKey, transferId, index, metadata.chunkCount, metadata.noncePrefix, cipherBytes);
+    if (plaintext.length !== plainSize) throw new Error("A decrypted chunk has an unexpected size.");
+    pieces.push(plaintext);
+    offset += cipherSize;
+    recoveredSize += plaintext.length;
+  }
+  if (recoveredSize !== metadata.originalSize || offset !== encryptedBlob.size) {
+    throw new Error("The decrypted file did not pass its size checks.");
+  }
+  const fileBlob = new Blob(pieces, { type: metadata.mimeType || "application/octet-stream" });
+  const objectUrl = URL.createObjectURL(fileBlob);
+  try {
+    const anchor = document.createElement("a");
+    anchor.href = objectUrl;
+    anchor.download = metadata.filename.replace(/[\\/\\r\\n]/g, "_").slice(0, 255) || "download";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+  } finally {
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 30_000);
+  }
+}
+
 function bytes(value: number): string {
   if (value < 1024) return value + " B";
   const units = ["KB", "MB", "GB", "TB"];
