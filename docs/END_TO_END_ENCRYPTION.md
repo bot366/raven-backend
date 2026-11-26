@@ -1,118 +1,118 @@
 # RAVEN End-to-End Encryption (E2EE) Design
 
-Status: experimental direct account-to-account implementation is on branch `raven-e2ee-design` in draft PR #7. It is not merged or deployed. Public share-link encryption and out-of-band public-key verification are not implemented.
+Status: experimental direct account-to-account implementation is on branch `raven-e2ee-design` in draft PR #7. It is not merged or deployed. Public share-link encryption and key transparency are not implemented.
 
 ## 1. Security goal
 
-New RAVEN transfers should be encrypted in the sender's browser before any file bytes reach the API. Only the sender and the intended recipient should have the decryption material. The API, database, hosting provider, and storage system should receive ciphertext and encrypted key envelopes only.
+New direct account-to-account transfers are encrypted in the sender's browser before file bytes reach the API. Only the sender and intended recipient should possess decryption material. The API, database, hosting provider, and storage system receive ciphertext and encrypted key envelopes only.
 
-This is application-layer end-to-end encryption. HTTPS/TLS remains required as a separate transport-security layer.
+HTTPS/TLS remains mandatory as a separate transport-security layer.
 
 ## 2. Threat model and limits
 
-The design is intended to protect file contents and file metadata against:
-- A database-only disclosure.
-- A storage-volume or backup disclosure.
-- A network observer between the browser and RAVEN.
-- Routine access by hosting or application operators to stored transfer bytes.
+Designed to protect file contents and encrypted metadata against database-only disclosure, storage/backup disclosure, network observers, and routine access by hosting/application operators.
 
 It does not protect against:
-- Malware, browser extensions, keyloggers, or an attacker controlling either endpoint.
-- Someone using an already-unlocked sender or recipient device.
-- A malicious or compromised frontend build that changes the JavaScript delivered to users. A web application can technically deliver code that reads plaintext before encryption or after decryption; independent client verification or a separately distributed signed client would be needed to strengthen this threat boundary.
-- A recipient copying, screenshotting, or forwarding a file after decrypting it.
-- A malicious server replacing a recipient's public key unless key fingerprints are independently verified or a key-transparency mechanism is added.
+- Malware, hostile browser extensions, keyloggers, or an attacker controlling either endpoint.
+- A compromised frontend build. Malicious JavaScript delivered by the application can read plaintext before encryption, after decryption, and can request cryptographic operations from the browser even when private keys are non-exportable.
+- Someone using an already-unlocked endpoint.
+- A recipient copying or forwarding a file after decryption.
+- A first-contact public-key substitution if the user does not compare the fingerprint through a genuinely separate trusted channel.
+- Loss of both the local private key and recovery code.
 
-The first release should be labelled experimental and used only with disposable, non-sensitive files until the protocol and implementation have been independently reviewed. The selected HPKE JavaScript implementation documents that it has passed relevant test vectors but has not been formally audited.
+Server-visible metadata includes account IDs, sender/recipient relationship, approximate encrypted size, timestamps, IP/network details and transfer status.
 
 ## 3. Cryptographic construction
 
-### File contents
+### File contents and metadata
 
-- Generate a fresh random 256-bit Data Encryption Key (DEK) for every transfer using the browser cryptographically secure random generator.
-- Encrypt file data in independent chunks in the browser using AES-256-GCM.
-- Use a fresh random 96-bit nonce for every chunk under that DEK. Never reuse a nonce with the same key.
-- Authenticate transfer ID, format version, chunk index, and chunk count as additional authenticated data (AAD). This prevents undetected chunk substitution or reordering.
-- Hash ciphertext on the server for corruption detection. The server-side hash is not a replacement for GCM authentication.
-- Keep chunk encryption bounded in memory so large files do not need to be loaded entirely into RAM.
+- A fresh random 256-bit data-encryption key (DEK) per transfer.
+- AES-256-GCM encryption in the browser, in bounded chunks.
+- Each file chunk uses a unique 96-bit nonce constructed from a fresh random 64-bit transfer prefix and a 32-bit chunk index.
+- The reserved index `0xffffffff` is used only for encrypted metadata; file chunks cannot use this nonce.
+- Transfer ID, format version, chunk index and chunk count are authenticated as AAD.
+- Filename, MIME type, plaintext size, chunk layout and nonce prefix are encrypted with the DEK and metadata-specific AAD.
+- The server hashes ciphertext for corruption detection; the GCM tag provides cryptographic authenticity.
 
-### Metadata
+The implementation validates metadata shape, expected chunk count, file sizes and the reserved metadata nonce before decrypting chunks.
 
-Encrypt the original filename, MIME type, and original plaintext size with AES-256-GCM under the same DEK but with a separate nonce and metadata-specific AAD. The backend should store only an opaque placeholder filename and ciphertext size. Sender, recipient, and share pages decrypt metadata in the browser.
+### Key envelopes
 
-The server will still learn some operational metadata, including account IDs, recipient, approximate encrypted size, timestamps, IP/network information, and transfer status. Hiding all traffic and relationship metadata is outside this first version.
+HPKE Auth mode is used with DHKEM(P-256, HKDF-SHA256), HKDF-SHA256 and AES-256-GCM. The sender and recipient each receive a separate envelope containing the transfer DEK. HPKE context info binds the envelope to:
+- the transfer ID,
+- sender account ID,
+- recipient account ID,
+- and whether the envelope is for the sender or recipient.
 
-### Delivering the DEK to accounts
+This prevents an otherwise valid envelope from being replayed or swapped across accounts, transfers, or envelope purposes. The recipient also verifies the sender's account key fingerprint before attempting to decrypt.
 
-Use HPKE (RFC 9180) to encrypt the DEK separately to:
-1. The sender's public encryption key, so the sender can later open their sent file.
-2. The intended recipient's public encryption key, for direct account-to-account transfers.
+### Account identity and recovery
 
-Use HPKE Auth mode for direct-transfer envelopes so the recipient can authenticate the sender's key, not Base mode alone. The recipient must verify that the sender public key is the one associated with the claimed account. A public-key directory controlled by the same server is vulnerable to key substitution; the UI should expose key fingerprints for out-of-band verification and clearly warn when a contact's key changes. Also include a unique transfer/message identifier and track processed transfer IDs so replayed envelope submissions can be rejected.
+- Each account has a versioned P-256 public/private encryption key pair.
+- The private-key backup is encrypted locally with AES-256-GCM using a randomly generated 256-bit recovery code and HKDF-SHA-256.
+- The recovery code is never sent to the server.
+- After creation or recovery, the private key is imported as a non-exportable WebCrypto key, then checked against its public key using an HPKE self-test before caching.
+- The unlocked private key stays in current-tab memory and is cleared on logout. After reload, users must unlock it again with the recovery code.
+- Losing the recovery code and every unlocked/local copy makes old encrypted transfers unrecoverable.
 
-Initial cipher suite: DHKEM(P-256, HKDF-SHA256) / HKDF-SHA256 / AES-256-GCM. Use a maintained HPKE implementation rather than designing a custom key-wrapping protocol. The implementation currently evaluated is `@hpke/core`, which uses the Web Cryptography API and documents browser support. Its repository states that it has passed HPKE/Wycheproof test vectors but has not been formally audited; that limitation must remain visible in the security notes.
+### Public-key fingerprint verification and pinning
 
-The API stores only the HPKE encapsulated value and ciphertext envelope. It must never receive the DEK or a plaintext private key.
+- Fingerprints are SHA-256 over the raw uncompressed P-256 public key.
+- On first contact, the sender must compare the recipient's fingerprint with a value the recipient shared out-of-band through a separate trusted channel, such as an in-person comparison or voice call.
+- On receipt, the recipient performs the same verification for the sender.
+- The browser stores verified fingerprints per local-account/peer-account pair. A changed fingerprint is rejected, not silently accepted.
+- Clearing browser site data removes local pins; contacts must be verified again.
 
-### Identity keys and recovery
+This is out-of-band verification with local pinning, not a key-transparency service. If users compare only values displayed by the same potentially compromised RAVEN service, the comparison provides no independent trust.
 
-- Each account has one versioned public/private encryption key pair.
-- The public key is registered with RAVEN and can be returned to an authenticated sender.
-- The private key is generated in the browser and never uploaded in plaintext.
-- Create a random, high-entropy recovery code for the user. Use it to encrypt the export of the private key locally with AES-256-GCM. Upload only the encrypted private-key backup, salt/nonce, and public key.
-- Keep an imported non-extractable private CryptoKey in IndexedDB on a device after the user unlocks it.
-- A new device or cleared browser profile must require the recovery code to restore the private key. RAVEN cannot recover the key if both the local copy and recovery code are lost. This is an intentional consequence of server-blind encryption.
-- The recovery code must be displayed once, with a download/copy option and a confirmation step. Never log it or send it to the API.
-- Public-key changes must be versioned and shown to users. A key fingerprint should be available for out-of-band verification. Do not silently trust a changed key from the server directory.
+## 4. Backend controls
 
-### Public share links
+- Versioned user public-key and encrypted-private-key-backup records.
+- Authenticated public-key lookup.
+- Transfer key envelopes restricted to sender and recipient.
+- Server validates canonical base64 encoding, key sizes, transfer participants and current key versions.
+- Envelope storage occurs only while the transfer is pending and is transactionally tied to a successful pending-transfer update.
+- Encrypted transfers reject the legacy single-request plaintext upload endpoint.
+- Transfer completion requires encrypted metadata and both participant key envelopes.
+- Legacy transfers remain encryption version 0 and are not retroactively relabelled encrypted.
 
-For a public share, the file DEK is carried in the URL fragment, for example `https://<frontend>/share/<token>#key=<secret>`. Browsers do not send URL fragments in HTTP requests, so the API receives only the share token and cannot read the key. The frontend share page fetches ciphertext, decrypts locally, and offers the file to the visitor.
+## 5. Compatibility and exclusions
 
-Anyone with the complete share link can decrypt the file. Anyone with only the token cannot. Revoking a link prevents future downloads through RAVEN but cannot erase copies already downloaded by visitors.
+- The E2EE flow currently supports direct RAVEN account-to-account transfers only.
+- Public share links are not encrypted in this iteration; the encrypted send UI requires an account recipient.
+- Existing transfers remain legacy/plaintext.
+- The server cannot retroactively encrypt old files without reading plaintext.
+- Key rotation and safe replacement/revocation are not implemented.
 
-## 4. Storage and API changes
+## 6. Tests
 
-The implementation will need:
-- A versioned user encryption-key record containing public key, encrypted private-key backup, recovery salt/nonce, and timestamps.
-- A transfer-key-envelope table scoped to transfer, recipient account, envelope purpose (sender/recipient), and algorithm version.
-- Encrypted transfer metadata and an encryption format/version field on transfers.
-- Authenticated endpoints to create/read the current user's key record, retrieve a recipient's public key, and create/read only the caller's own transfer envelopes.
-- A ciphertext download path for authenticated direct recipients and public share visitors.
-- Backend authorization checks that prevent one account from reading another account's key backup or envelopes.
+The CI suite currently covers:
+- Identity setup and recovery.
+- Rejection of wrong recovery codes.
+- Rejection when a public key no longer matches the recovered private key.
+- Non-exportability of unlocked private keys.
+- HPKE sender/recipient key-envelope round trip.
+- Rejection of wrong recipient, wrong envelope purpose and wrong transfer ID.
+- Fingerprint normalization, first-contact pinning, and rejecting a changed peer key.
+- AES-GCM metadata/chunk round trip.
+- Rejection of altered ciphertext and metadata nonce.
 
-The existing chunk upload integrity checks can continue to hash ciphertext. The encrypted file format must be versioned and have explicit nonce/chunk framing so downloads can be split and authenticated reliably.
+These tests are important regression checks, not a full security audit or complete browser/backend integration suite.
 
-## 5. Compatibility
+## 7. Remaining security work before production
 
-- Existing transfers are legacy plaintext transfers and must be explicitly marked as such. Do not silently claim they are encrypted.
-- New transfers should use the encrypted format only after the sender and recipient key setup is complete.
-- Do not perform server-side "retroactive encryption" on old files: the server would have to read the original plaintext. A user can download an old file and re-upload it through the encrypted client flow.
-- The feature must not be enabled on the live deployment until backend migrations, frontend code, and API behavior are deployed together.
+1. Independent cryptographic and application security review.
+2. Safer key rotation/recovery and explicit key-change UX.
+3. Key transparency or a stronger authenticated contact directory.
+4. Public share-link fragment-key encryption.
+5. Browser integration tests across supported browsers and devices.
+6. Replay/authorization testing and large-file memory/performance testing.
+7. Review frontend delivery integrity and XSS/content security controls.
 
-## 6. Implementation sequence
-
-1. **Identity and recovery:** initial public-key records, encrypted private-key backup, current-tab browser key cache, recovery-code setup/restore, and API authorization checks are implemented. Key rotation and out-of-band fingerprint verification are still missing.
-2. **Direct transfers:** an experimental client-side chunk encryption path, encrypted metadata, sender/recipient HPKE Auth envelopes, ciphertext upload/download, and local decryption are implemented on the branch.
-3. **Public shares:** not implemented for E2EE yet; current new encrypted-send flow requires a RAVEN account recipient. Existing share links remain legacy plaintext.
-4. **Hardening:** initial test covers identity recovery, correct/wrong HPKE recipients, AES-GCM round-trip, and ciphertext tampering. More integration, authorization, replay, large-file memory, and browser recovery tests plus an independent security review remain required.
-
-## 7. Required tests before enabling E2EE
-
-- Sender can encrypt, upload, and decrypt their own transfer.
-- Intended recipient can decrypt; a different account cannot.
-- API/database/storage fixtures contain no plaintext file bytes, filename, or MIME type for encrypted transfers.
-- A changed ciphertext byte, nonce, AAD, or chunk order causes decryption to fail.
-- A missing, wrong, or corrupted envelope fails closed with a clear error.
-- Recovery code restores the same identity key on a second browser profile.
-- Wrong recovery code does not import a usable private key.
-- Public share link works with the fragment key; token-only access yields ciphertext and cannot reveal plaintext.
-- A transfer created before E2EE remains labelled legacy and continues using its existing compatibility path.
-- Chunk retries and interruptions do not cause nonce reuse or mix ciphertext from different files.
-- Backend logs and error responses never contain plaintext file data or recovery material.
+The implementation remains experimental. Test only with disposable, non-sensitive files until all remaining work and an independent review are complete.
 
 ## 8. References
 
 - RFC 9180, Hybrid Public Key Encryption: https://www.rfc-editor.org/rfc/rfc9180.html
 - OWASP Cryptographic Storage Cheat Sheet: https://cheatsheetseries.owasp.org/cheatsheets/Cryptographic_Storage_Cheat_Sheet.html
-- hpke-js implementation and supported environments: https://github.com/dajiaji/hpke-js
+- hpke-js implementation: https://github.com/dajiaji/hpke-js
