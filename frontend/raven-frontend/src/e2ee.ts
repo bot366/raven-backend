@@ -93,7 +93,7 @@ function makeChunkNonce(prefix: Uint8Array, index: number): Uint8Array {
   new DataView(nonce.buffer).setUint32(8, index, false);
   return nonce;
 }
-function chunkAad(transferId: string, index: number, count: number): Uint8Array {
+function chunkAad(transferId: string, index: number, count: number): ArrayBuffer {
   return aad("RAVEN:E2EE:1:" + transferId + ":" + index + ":" + count);
 }
 
@@ -265,7 +265,7 @@ export async function encryptTransferChunk(
     {
       name: "AES-GCM",
       iv: toArrayBuffer(makeChunkNonce(session.noncePrefix, index)),
-      additionalData: toArrayBuffer(chunkAad(transferId, index, session.chunkCount)),
+      additionalData: chunkAad(transferId, index, session.chunkCount),
     },
     session.fileKey,
     await plaintext.arrayBuffer(),
@@ -341,7 +341,7 @@ export async function decryptTransferChunk(
     {
       name: "AES-GCM",
       iv: toArrayBuffer(nonce),
-      additionalData: toArrayBuffer(chunkAad(transferId, index, count)),
+      additionalData: chunkAad(transferId, index, count),
     },
     fileKey,
     ciphertext,
