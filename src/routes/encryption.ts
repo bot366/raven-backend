@@ -137,7 +137,10 @@ export async function encryptionRoutes(app: FastifyInstance): Promise<void> {
       for (const envelope of envelopes) {
         await client.query(
           `INSERT INTO transfer_key_envelopes (transfer_id, user_id, key_version, enc, ciphertext)
-           VALUES ($1,$2,$3,$4,$5)`,
+           VALUES ($1,$2,$3,$4,$5)
+           ON CONFLICT (transfer_id, user_id) DO UPDATE
+             SET key_version=EXCLUDED.key_version, enc=EXCLUDED.enc,
+                 ciphertext=EXCLUDED.ciphertext`,
           [transfer.id, envelope.userId, envelope.keyVersion, envelope.enc, envelope.ciphertext]
         );
       }
