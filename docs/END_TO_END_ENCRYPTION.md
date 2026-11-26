@@ -1,6 +1,6 @@
 # RAVEN End-to-End Encryption (E2EE) Design
 
-Status: design proposal for the controlled-testing phase. This document does not enable encryption or change live application behavior.
+Status: experimental direct account-to-account implementation is on branch `raven-e2ee-design` in draft PR #7. It is not merged or deployed. Public share-link encryption and out-of-band public-key verification are not implemented.
 
 ## 1. Security goal
 
@@ -92,10 +92,10 @@ The existing chunk upload integrity checks can continue to hash ciphertext. The 
 
 ## 6. Implementation sequence
 
-1. **Identity and recovery:** public-key records, encrypted private-key backup, browser key cache, recovery-code setup/restore, key fingerprints, and authorization tests.
-2. **Direct transfers:** client-side chunk encryption, encrypted metadata, sender/recipient HPKE envelopes, ciphertext upload/download, and decrypt-on-recipient behavior.
-3. **Public shares:** frontend share route, fragment-only key handling, local decryption, and clear bearer-link warnings.
-4. **Hardening:** tamper tests, wrong-key tests, replay/authorization tests, large-file memory tests, upload retry/resume tests, and a security review.
+1. **Identity and recovery:** initial public-key records, encrypted private-key backup, current-tab browser key cache, recovery-code setup/restore, and API authorization checks are implemented. Key rotation and out-of-band fingerprint verification are still missing.
+2. **Direct transfers:** an experimental client-side chunk encryption path, encrypted metadata, sender/recipient HPKE Auth envelopes, ciphertext upload/download, and local decryption are implemented on the branch.
+3. **Public shares:** not implemented for E2EE yet; current new encrypted-send flow requires a RAVEN account recipient. Existing share links remain legacy plaintext.
+4. **Hardening:** initial test covers identity recovery, correct/wrong HPKE recipients, AES-GCM round-trip, and ciphertext tampering. More integration, authorization, replay, large-file memory, and browser recovery tests plus an independent security review remain required.
 
 ## 7. Required tests before enabling E2EE
 
