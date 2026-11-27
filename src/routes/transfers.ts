@@ -541,6 +541,7 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
     `UPDATE transfers SET expires_at=NOW()+($3::int * INTERVAL '1 hour')
      WHERE id=$1 AND user_id=$2 AND recipient_user_id IS NULL
        AND share_token IS NOT NULL AND status='completed'
+       AND (expires_at IS NULL OR expires_at>NOW())
      RETURNING *`,
     [request.params.id,user.id,expiryHours]
    );
