@@ -124,6 +124,66 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     return { user };
   });
 
+
+  app.get("/auth/sessions", async (request, reply) => {
+    const user = await requireUser(request, reply);
+    if (!user) return;
+    const token = request.cookies?.[SESSION_COOKIE_NAME];
+    if (!token) return reply.code(401).send({ error: "Your session has expired. Please sign in again." });
+    const currentHash = hashSessionToken(token);
+    const result = await query<{ id: string; token_hash: string; created_at: Date; expires_at: Date }>(
+      "SELECT id, token_hash, created_at, expires_at FROM sessions WHERE user_id=$1 AND expires_at>NOW() ORDER BY created_at DESC",
+      [user.id]
+    );
+    reply.header("Cache-Control", "no-store, private");
+    return { sessions: result.rows.map((session) => ({
+      id: session.id, createdAt: session.created_at, expiresAt: session.expires_at,
+      current: session.token_hash === currentHash
+    })) };
+  });
+
+  app.delete("/auth/sessions/others", async (request, reply) => {
+    const user = await requireUser(request, reply);
+    if (!user) return;
+    const token = request.cookies?.[SESSION_COOKIE_NAME];
+    if (!token) return reply.code(401).send({ error: "Your session has expired. Please sign in again." });
+    const result = await query("DELETE FROM sessions WHERE user_id=$1 AND token_hash<>$2", [user.id, hashSessionToken(token)]);
+    return { message: "Other sessions have been signed out.", signedOut: result.rowCount ?? 0 };
+  });
+
+  app.put<{ Body: { currentPassword?: unknown; newPassword?: unknown } }>("/auth/password", async (request, reply) => {
+    const user = await requireUser(request, reply);
+    if (!user) return;
+    const currentPassword = typeof request.body?.currentPassword === "string" ? request.body.currentPassword : "";
+    const newPassword = typeof request.body?.newPassword === "string" ? request.body.newPassword : "";
+    if (!currentPassword || currentPassword.length > 128 || newPassword.length < 8 || newPassword.length > 128) {
+      return reply.code(400).send({ error: "Enter your current password and a new password between 8 and 128 characters." });
+    }
+    const stored = await query<{ password_hash: string }>("SELECT password_hash FROM users WHERE id=$1", [user.id]);
+    if (!stored.rows[0] || !await argon2.verify(stored.rows[0].password_hash, currentPassword).catch(() => false)) {
+      return reply.code(401).send({ error: "Your current password is incorrect." });
+    }
+    const nextHash = await argon2.hash(newPassword, { type: argon2.argon2id });
+    await query("UPDATE users SET password_hash=$2 WHERE id=$1", [user.id, nextHash]);
+    const token = request.cookies?.[SESSION_COOKIE_NAME];
+    if (token) await query("DELETE FROM sessions WHERE user_id=$1 AND token_hash<>$2", [user.id, hashSessionToken(token)]);
+    return { message: "Password updated. Other active sessions have been signed out." };
+  });
+
+  app.put<{ Body: { displayName?: unknown } }>("/profile/display-name", async (request, reply) => {
+    const user = await requireUser(request, reply);
+    if (!user) return;
+    const displayName = typeof request.body?.displayName === "string" ? request.body.displayName.trim() : "";
+    if (displayName.length < 2 || displayName.length > 60) {
+      return reply.code(400).send({ error: "Display name must be between 2 and 60 characters." });
+    }
+    const result = await query<{ id: string; display_name: string; username: string | null; email: string; avatar_path: string | null }>(
+      "UPDATE users SET display_name=$2 WHERE id=$1 RETURNING id,display_name,username,email,avatar_path",
+      [user.id, displayName]
+    );
+    return { user: publicUser(result.rows[0]) };
+  });
+
   app.put<{ Body: { username?: unknown } }>("/profile/username", async (request, reply) => {
     const user = await requireUser(request, reply);
     if (!user) return;
