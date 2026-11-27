@@ -7,6 +7,7 @@ import {mkdir,unlink} from "node:fs/promises";
 import {pipeline} from "node:stream/promises";
 import {query} from "../db.js";
 import {config} from "../config.js";
+import {recordTransferEvent} from "../transfer-events.js";
 import type {TransferRow} from "../types.js";
 import {SESSION_COOKIE_NAME,getAuthenticatedUser} from "../auth.js";
 
@@ -499,7 +500,8 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
   if(!row)return reply.code(404).send({error:"Share link not found."});
   if(row.encryption_version===1)reply.header("Cache-Control","no-store, private");
   if(row.status==="completed"&&(!row.expires_at||new Date(row.expires_at)>new Date())){
-   await query("INSERT INTO transfer_events(transfer_id,event_type) VALUES($1,$2)",[row.id,"download"]);
+   if(row.encryption_version!==1)await recordTransferEvent(row.id,"view");
+   await recordTransferEvent(row.id,"download");
   }
   return sendFile(reply,row);
  });
@@ -512,7 +514,8 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
   if(!row)return reply.code(404).send({error:"Share link not found."});
   if(row.encryption_version===1)return reply.code(409).send({error:"This is an encrypted share. Open it in the RAVEN web app to decrypt it locally."});
   if(row.status==="completed"&&(!row.expires_at||new Date(row.expires_at)>new Date())){
-   await query("INSERT INTO transfer_events(transfer_id,event_type) VALUES($1,$2)",[row.id,"download"]);
+   if(row.encryption_version!==1)await recordTransferEvent(row.id,"view");
+   await recordTransferEvent(row.id,"download");
   }
   return sendFile(reply,row);
  });
