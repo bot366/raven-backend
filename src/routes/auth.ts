@@ -250,6 +250,25 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     }
   });
 
+  app.delete("/profile/avatar", async (request, reply) => {
+    const user = await requireUser(request, reply);
+    if (!user) return;
+    const result = await query<{ avatar_path: string | null }>(
+      "UPDATE users SET avatar_path=NULL,avatar_mime_type=NULL WHERE id=$1 RETURNING avatar_path",
+      [user.id]
+    );
+    const oldPath = result.rows[0]?.avatar_path;
+    if (oldPath) {
+      if (isB2ObjectPath(oldPath)) await deleteObject(oldPath).catch(() => undefined);
+      else await unlink(oldPath).catch(() => undefined);
+    }
+    const refreshed = await query<{ id: string; display_name: string; username: string | null; email: string; avatar_path: string | null }>(
+      "SELECT id,display_name,username,email,avatar_path FROM users WHERE id=$1",
+      [user.id]
+    );
+    return { message: "Profile picture removed.", user: publicUser(refreshed.rows[0]) };
+  });
+
   app.get("/profile/avatar", async (request, reply) => {
     const user = await requireUser(request, reply);
     if (!user) return;
