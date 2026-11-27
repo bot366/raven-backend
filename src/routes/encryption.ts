@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { pool, query } from "../db.js";
 import { SESSION_COOKIE_NAME, getAuthenticatedUser } from "../auth.js";
 import { validateEncryptionEnvelopes } from "../encryption-validation.js";
+import {recordTransferEvent} from "../transfer-events.js";
 
 type KeyBody = {
   publicKey?: unknown;
@@ -169,6 +170,7 @@ export async function encryptionRoutes(app: FastifyInstance): Promise<void> {
       [request.params.token]
     );
     if (!result.rows[0]) return reply.code(404).send({ error: "Encrypted share not found or expired." });
+    await recordTransferEvent(result.rows[0].id, "view");
     reply.header("Cache-Control", "no-store, private");
     return { envelope: result.rows[0] };
   });

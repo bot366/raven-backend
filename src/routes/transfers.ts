@@ -7,25 +7,30 @@ import {mkdir,unlink} from "node:fs/promises";
 import {pipeline} from "node:stream/promises";
 import {query} from "../db.js";
 import {config} from "../config.js";
+import {recordTransferEvent} from "../transfer-events.js";
 import type {TransferRow} from "../types.js";
 import {SESSION_COOKIE_NAME,getAuthenticatedUser} from "../auth.js";
+import { b2StorageEnabled, deleteObject, getObjectStream, isB2ObjectPath, makeObjectKey, objectExists, uploadObject } from "../storage.js";
 
 type ChunkRow = {chunk_index:number;chunk_size:number;sha256:string;storage_path:string};
 type ChunkTransferRow = TransferRow & {chunk_size:number|null;chunk_count:number|null};
+type TransferStatsRow = TransferRow & { view_count?: number | string; download_count?: number | string; recipient_display_name?: string | null; recipient_username?: string | null; recipient_email?: string | null };
 type ReceivedTransferRow = TransferRow & {
  sender_display_name:string;
  sender_username:string|null;
  sender_email:string;
 };
 
-function publicTransfer(row:TransferRow){
+function publicTransfer(row:TransferStatsRow){
  return {
   id:row.id,filename:row.encryption_version===1?"Encrypted file":row.filename,filesize:Number(row.filesize),status:row.status,
   encryptionVersion:row.encryption_version??0,
   createdAt:row.created_at,uploadedAt:row.uploaded_at,expiresAt:row.expires_at,
   downloadUrl:row.status==="completed"?config.publicBaseUrl+"/transfers/"+row.id+"/download":null,
   shareUrl:row.share_token?config.publicBaseUrl+"/share/"+row.share_token:null,
-  sha256:row.sha256
+  sha256:row.sha256,
+  viewCount:Number(row.view_count??0),downloadCount:Number(row.download_count??0),
+  recipientName:row.recipient_display_name??null,recipientUsername:row.recipient_username??null,recipientEmail:row.recipient_email??null
  };
 }
 
@@ -57,11 +62,11 @@ async function hashFile(filePath:string):Promise<string>{
 }
 
 async function verifyStoredChunk(chunk:ChunkRow):Promise<boolean>{
- if(!fs.existsSync(chunk.storage_path))return false;
  const hash=createHash("sha256");
  let size=0;
  try{
-  for await(const data of fs.createReadStream(chunk.storage_path)){
+  const stream=isB2ObjectPath(chunk.storage_path)?await getObjectStream(chunk.storage_path):fs.createReadStream(chunk.storage_path);
+  for await(const data of stream){
    const buffer=Buffer.isBuffer(data)?data:Buffer.from(data);
    size+=buffer.length;hash.update(buffer);
   }
@@ -69,9 +74,23 @@ async function verifyStoredChunk(chunk:ChunkRow):Promise<boolean>{
  }catch{return false;}
 }
 
+async function deleteStoredPath(value:string):Promise<void>{
+ if(isB2ObjectPath(value)) await deleteObject(value).catch(()=>undefined);
+ else await unlink(value).catch(()=>undefined);
+}
+
 async function sendFile(reply:FastifyReply,row:TransferRow){
  if(row.status!=="completed"||!row.storage_path)return reply.code(410).send({error:"This file is no longer available."});
  if(row.expires_at&&new Date(row.expires_at)<new Date())return reply.code(410).send({error:"This file has expired."});
+ if(isB2ObjectPath(row.storage_path)){
+  try{
+   const stream=await getObjectStream(row.storage_path);
+   reply.header("Content-Type",row.mime_type??"application/octet-stream");
+   reply.header("Content-Disposition",'attachment; filename="'+safeName(row.filename)+'"');
+   reply.header("Content-Length",String(row.filesize));
+   return reply.send(stream);
+  }catch{return reply.code(404).send({error:"The stored file is missing from cloud storage."});}
+ }
  if(!fs.existsSync(row.storage_path))return reply.code(404).send({error:"The stored file is missing from the server."});
  reply.header("Content-Type",row.mime_type??"application/octet-stream");
  reply.header("Content-Disposition",'attachment; filename="'+safeName(row.filename)+'"');
@@ -117,7 +136,7 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
   for(const chunk of received.rows){
    if(await verifyStoredChunk(chunk))validReceived.push(chunk);
    else{
-    await unlink(chunk.storage_path).catch(()=>undefined);
+    await deleteStoredPath(chunk.storage_path);
     await query("DELETE FROM transfer_chunks WHERE transfer_id=$1 AND chunk_index=$2",[transfer.id,chunk.chunk_index]);
    }
   }
@@ -139,7 +158,7 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
    [transfer.id]
   );
   const validReceived=[] as typeof received.rows;
-  for(const chunk of received.rows){if(await verifyStoredChunk(chunk))validReceived.push(chunk);else{await unlink(chunk.storage_path).catch(()=>undefined);await query("DELETE FROM transfer_chunks WHERE transfer_id=$1 AND chunk_index=$2",[transfer.id,chunk.chunk_index]);}}
+  for(const chunk of received.rows){if(await verifyStoredChunk(chunk))validReceived.push(chunk);else{await deleteStoredPath(chunk.storage_path);await query("DELETE FROM transfer_chunks WHERE transfer_id=$1 AND chunk_index=$2",[transfer.id,chunk.chunk_index]);}}
   return {
    transferId:transfer.id,chunkSize:transfer.chunk_size,chunkCount:transfer.chunk_count,
    receivedChunks:validReceived.map(({chunk_index,chunk_size,sha256})=>({chunk_index,chunk_size,sha256})),
@@ -199,19 +218,26 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
     return reply.code(409).send({error:"A different chunk is already stored at this position."});
    }
    if(existing.rows[0]){
-    await unlink(existing.rows[0].storage_path).catch(()=>undefined);
+    await deleteStoredPath(existing.rows[0].storage_path);
     await query("DELETE FROM transfer_chunks WHERE transfer_id=$1 AND chunk_index=$2",[transfer.id,index]);
    }
+   let storedPath=destination;
    try{
-    const inserted=await query(
+   if(b2StorageEnabled()){
+    storedPath=await uploadObject(makeObjectKey("transfer-chunks",transfer.id,String(index)+"-"+randomUUID()),fs.createReadStream(destination),"application/octet-stream",byteCount);
+    await unlink(destination).catch(()=>undefined);
+   }
+   const inserted=await query(
      "INSERT INTO transfer_chunks(transfer_id,chunk_index,chunk_size,sha256,storage_path) SELECT $1,$2,$3,$4,$5 WHERE EXISTS(SELECT 1 FROM transfers WHERE id=$1 AND user_id=$6 AND status='pending') RETURNING chunk_index",
-     [transfer.id,index,byteCount,actualHash,destination,user.id]
+     [transfer.id,index,byteCount,actualHash,storedPath,user.id]
     );
     if(!inserted.rows[0]){
+     await deleteStoredPath(storedPath);
      await unlink(destination).catch(()=>undefined);
      return reply.code(409).send({error:"This transfer was cancelled before the chunk could be saved."});
     }
    }catch(error){
+    await deleteStoredPath(storedPath);
     await unlink(destination).catch(()=>undefined);
     if(typeof error==="object"&&error!==null&&"code" in error&&error.code==="23505"){
      return reply.code(409).send({error:"This chunk was received simultaneously. Check upload status and retry if needed."});
@@ -257,7 +283,7 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
    const expectedSize=index===transfer.chunk_count-1
     ? Number(transfer.filesize)-transfer.chunk_size*(transfer.chunk_count-1)
     : transfer.chunk_size;
-   if(Number(parts.rows[index].chunk_size)!==expectedSize||!fs.existsSync(parts.rows[index].storage_path)){
+   if(Number(parts.rows[index].chunk_size)!==expectedSize||!(isB2ObjectPath(parts.rows[index].storage_path)?await objectExists(parts.rows[index].storage_path):fs.existsSync(parts.rows[index].storage_path))){
     return reply.code(409).send({error:"A stored chunk is missing or has an invalid size.",chunkIndex:index});
    }
   }
@@ -271,7 +297,8 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
    for(const part of parts.rows){
     const partHash=createHash("sha256");
     let partBytes=0;
-    for await(const data of fs.createReadStream(part.storage_path)){
+    const partStream=isB2ObjectPath(part.storage_path)?await getObjectStream(part.storage_path):fs.createReadStream(part.storage_path);
+    for await(const data of partStream){
      const buffer=Buffer.isBuffer(data)?data:Buffer.from(data);
      partBytes+=buffer.length;totalBytes+=buffer.length;
      partHash.update(buffer);finalHash.update(buffer);
@@ -290,15 +317,21 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
    }
    const digest=finalHash.digest("hex");
    const token=randomUUID();
+   let finalStoragePath=destination;
+   if(b2StorageEnabled()){
+    finalStoragePath=await uploadObject(makeObjectKey("transfers",transfer.id,"payload"),fs.createReadStream(destination),transfer.mime_type??"application/octet-stream",totalBytes);
+   }
    const updated=await query<TransferRow>(
     "UPDATE transfers SET storage_path=$3,sha256=$4,uploaded_at=NOW(),status='completed',share_token=CASE WHEN recipient_user_id IS NULL THEN $5::uuid ELSE NULL::uuid END WHERE id=$1 AND user_id=$2 AND status='pending' RETURNING *",
-    [transfer.id,user.id,destination,digest,token]
+    [transfer.id,user.id,finalStoragePath,digest,token]
    );
    if(!updated.rows[0]){
+    if(isB2ObjectPath(finalStoragePath)) await deleteObject(finalStoragePath).catch(()=>undefined);
     await unlink(destination).catch(()=>undefined);
     return reply.code(409).send({error:"Transfer changed before assembly completed."});
    }
-   for(const part of parts.rows)await unlink(part.storage_path).catch(()=>undefined);
+   if(isB2ObjectPath(finalStoragePath)) await unlink(destination).catch(()=>undefined);
+   for(const part of parts.rows)await deleteStoredPath(part.storage_path);
    await query("DELETE FROM transfer_chunks WHERE transfer_id=$1",[transfer.id]);
    await fs.promises.rm(path.join(config.storageDir,"chunks",transfer.id),{recursive:true,force:true}).catch(()=>undefined);
    const completed=updated.rows[0];
@@ -316,7 +349,7 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
      const corruptIndex=Number(match[1]);
      const corruptPart=parts.rows.find(part=>part.chunk_index===corruptIndex);
      await query("DELETE FROM transfer_chunks WHERE transfer_id=$1 AND chunk_index=$2",[transfer.id,corruptIndex]);
-     if(corruptPart)await unlink(corruptPart.storage_path).catch(()=>undefined);
+     if(corruptPart)await deleteStoredPath(corruptPart.storage_path);
      return reply.code(422).send({error:error.message,chunkIndex:corruptIndex,retryable:true});
     }
     return reply.code(422).send({error:error.message});
@@ -334,7 +367,7 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
   await query("UPDATE transfers SET status='cancelled' WHERE id=$1 AND user_id=$2 AND status='pending'",[transfer.id,user.id]);
   const parts=await query<{storage_path:string}>("SELECT storage_path FROM transfer_chunks WHERE transfer_id=$1",[transfer.id]);
   await query("DELETE FROM transfer_chunks WHERE transfer_id=$1",[transfer.id]);
-  for(const part of parts.rows)await unlink(part.storage_path).catch(()=>undefined);
+  for(const part of parts.rows)await deleteStoredPath(part.storage_path);
   await fs.promises.rm(path.join(config.storageDir,"chunks",transfer.id),{recursive:true,force:true}).catch(()=>undefined);
   return {message:"Upload cancelled and temporary chunks removed."};
  });
@@ -343,7 +376,15 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
  app.get("/transfers",async(request,reply)=>{
   const user=await requireUser(request,reply);if(!user)return;
   await query("UPDATE transfers SET status='expired' WHERE user_id=$1 AND expires_at<=NOW() AND status IN ('pending','completed')",[user.id]);
-  const r=await query<TransferRow>("SELECT * FROM transfers WHERE user_id=$1 ORDER BY created_at DESC LIMIT 100",[user.id]);
+  const r=await query<TransferStatsRow>(
+   `SELECT t.*, recipient.display_name AS recipient_display_name,
+      recipient.username AS recipient_username, recipient.email AS recipient_email,
+      (SELECT COUNT(*)::int FROM transfer_events e WHERE e.transfer_id=t.id AND e.event_type='view') AS view_count,
+      (SELECT COUNT(*)::int FROM transfer_events e WHERE e.transfer_id=t.id AND e.event_type='download') AS download_count
+    FROM transfers t LEFT JOIN users recipient ON recipient.id=t.recipient_user_id
+    WHERE t.user_id=$1 ORDER BY t.created_at DESC LIMIT 100`,
+   [user.id]
+  );
   return {transfers:r.rows.map(publicTransfer)};
  });
 
@@ -447,15 +488,20 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
     return reply.code(413).send({error:"File exceeds the configured upload limit."});
    }
    const stat=await fs.promises.stat(destination);
+   const storedPath=b2StorageEnabled()
+    ? await uploadObject(makeObjectKey("transfers",transfer.id,"payload"),fs.createReadStream(destination),part.mimetype,stat.size)
+    : destination;
    const token=randomUUID();
    const updated=await query<TransferRow>(
     "UPDATE transfers SET filename=$3,filesize=$4,storage_path=$5,mime_type=$6,sha256=$7,uploaded_at=NOW(),status='completed',share_token=CASE WHEN recipient_user_id IS NULL THEN $8::uuid ELSE NULL::uuid END WHERE id=$1 AND user_id=$2 AND status='pending' RETURNING *",
-    [transfer.id,user.id,name,stat.size,destination,part.mimetype,await hashFile(destination),token]
+    [transfer.id,user.id,name,stat.size,storedPath,part.mimetype,await hashFile(destination),token]
    );
    if(!updated.rows[0]){
+    if(isB2ObjectPath(storedPath)) await deleteObject(storedPath).catch(()=>undefined);
     await unlink(destination).catch(()=>undefined);
     return reply.code(409).send({error:"Transfer changed before upload completed."});
    }
+   if(isB2ObjectPath(storedPath)) await unlink(destination).catch(()=>undefined);
    return reply.code(201).send({
     message:"File uploaded successfully.",
     transfer:publicTransfer(updated.rows[0]),
@@ -487,6 +533,10 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
   const row=r.rows[0];
   if(!row)return reply.code(404).send({error:"Share link not found."});
   if(row.encryption_version===1)reply.header("Cache-Control","no-store, private");
+  if(row.status==="completed"&&(!row.expires_at||new Date(row.expires_at)>new Date())){
+   if(row.encryption_version!==1)await recordTransferEvent(row.id,"view");
+   await recordTransferEvent(row.id,"download");
+  }
   return sendFile(reply,row);
  });
 
@@ -497,6 +547,43 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
   const row=r.rows[0];
   if(!row)return reply.code(404).send({error:"Share link not found."});
   if(row.encryption_version===1)return reply.code(409).send({error:"This is an encrypted share. Open it in the RAVEN web app to decrypt it locally."});
+  if(row.status==="completed"&&(!row.expires_at||new Date(row.expires_at)>new Date())){
+   if(row.encryption_version!==1)await recordTransferEvent(row.id,"view");
+   await recordTransferEvent(row.id,"download");
+  }
   return sendFile(reply,row);
  });
+
+  app.post<{Params:{id:string}}>("/transfers/:id/revoke-link",async(request,reply)=>{
+   const user=await requireUser(request,reply);if(!user)return;
+   const result=await query<TransferRow>(
+    `UPDATE transfers SET status='revoked',expires_at=NOW()
+     WHERE id=$1 AND user_id=$2 AND recipient_user_id IS NULL
+       AND share_token IS NOT NULL AND status='completed'
+     RETURNING *`,
+    [request.params.id,user.id]
+   );
+   if(!result.rows[0])return reply.code(404).send({error:"Active share link not found."});
+   return {message:"Share link revoked.",transfer:publicTransfer(result.rows[0])};
+  });
+
+  app.post<{Params:{id:string};Body:{expiryHours?:number}}>("/transfers/:id/expiry",async(request,reply)=>{
+   const user=await requireUser(request,reply);if(!user)return;
+   const expiryHours=request.body?.expiryHours;
+   const allowed=[1,24,72,168,720];
+   if(!Number.isSafeInteger(expiryHours)||!allowed.includes(Number(expiryHours))){
+    return reply.code(400).send({error:"Choose an expiry of 1 hour, 1 day, 3 days, 7 days, or 30 days."});
+   }
+   const result=await query<TransferRow>(
+    `UPDATE transfers SET expires_at=NOW()+($3::int * INTERVAL '1 hour')
+     WHERE id=$1 AND user_id=$2 AND recipient_user_id IS NULL
+       AND share_token IS NOT NULL AND status='completed'
+       AND (expires_at IS NULL OR expires_at>NOW())
+     RETURNING *`,
+    [request.params.id,user.id,expiryHours]
+   );
+   if(!result.rows[0])return reply.code(404).send({error:"Active share link not found. Expired or revoked links cannot be extended."});
+   return {message:"Share link expiry updated.",transfer:publicTransfer(result.rows[0])};
+  });
+
 }

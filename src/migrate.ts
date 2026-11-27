@@ -79,6 +79,15 @@ CREATE TABLE IF NOT EXISTS transfer_key_envelopes (
 );
 CREATE INDEX IF NOT EXISTS transfer_key_envelopes_user_created_idx
  ON transfer_key_envelopes(user_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS transfer_events (
+ id BIGSERIAL PRIMARY KEY,
+ transfer_id UUID NOT NULL REFERENCES transfers(id) ON DELETE CASCADE,
+ event_type TEXT NOT NULL CHECK (event_type IN ('view','download')),
+ created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS transfer_events_transfer_type_created_idx
+ ON transfer_events(transfer_id,event_type,created_at DESC);
 `;
 
 const client = await pool.connect();

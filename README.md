@@ -21,7 +21,12 @@ RAVEN is a React + TypeScript file-sharing application backed by Fastify, Neon P
   - `PUBLIC_BASE_URL`: backend public origin
   - `MAX_FILE_SIZE_MB`: upload limit (default 100)
   - `TRANSFER_EXPIRY_HOURS`: transfer lifetime (default 24)
-  - `STORAGE_DIR`: local storage directory (temporary only on ephemeral hosting)
+  - `STORAGE_DIR`: local fallback storage directory when B2 is not configured
+  - `B2_ENDPOINT`: Backblaze S3 endpoint, e.g. `https://s3.us-east-005.backblazeb2.com`
+  - `B2_REGION`: bucket region, e.g. `us-east-005`
+  - `B2_BUCKET_NAME`: private bucket name
+  - `B2_KEY_ID`: restricted Backblaze application key ID
+  - `B2_APPLICATION_KEY`: matching application key secret
 - For the existing production release, run the migration only when deploying its matching API/frontend versions. The additional E2EE schema on `raven-e2ee-design` is experimental: do not apply it to production Neon or deploy this branch until the security review and browser integration work are complete.
 
 ## Database update
@@ -70,6 +75,15 @@ CREATE TABLE IF NOT EXISTS public.transfer_key_envelopes (
 CREATE INDEX IF NOT EXISTS transfer_key_envelopes_user_created_idx
   ON public.transfer_key_envelopes(user_id, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS public.transfer_events (
+  id BIGSERIAL PRIMARY KEY,
+  transfer_id UUID NOT NULL REFERENCES public.transfers(id) ON DELETE CASCADE,
+  event_type TEXT NOT NULL CHECK (event_type IN ('view','download')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS transfer_events_transfer_type_created_idx
+  ON public.transfer_events(transfer_id,event_type,created_at DESC);
+
 CREATE TABLE IF NOT EXISTS public.transfer_chunks (
   transfer_id UUID NOT NULL REFERENCES public.transfers(id) ON DELETE CASCADE,
   chunk_index INTEGER NOT NULL CHECK (chunk_index >= 0),
@@ -96,27 +110,28 @@ The backend migration script contains the same changes and is safe to rerun.
 
 ## API routes
 - `GET /health`
-- `POST /auth/register`, `POST /auth/login` (email or username), `POST /auth/logout`, `GET /auth/me`
-- `PUT /profile/username`, `PUT /profile/avatar`, `GET /profile/avatar`
+- `POST /auth/register`, `POST /auth/login` (email or username), `POST /auth/logout`, `GET /auth/me`, `PUT /auth/password`, `GET /auth/sessions`, `DELETE /auth/sessions/others`
+- `PUT /profile/display-name`, `PUT /profile/username`, `PUT /profile/avatar`, `GET /profile/avatar`
 - `GET /users/lookup?identifier=...`: authenticated username/email recipient lookup
 - `GET /encryption/keys/me`, `PUT /encryption/keys/me`: read or create the caller's encryption identity and encrypted recovery backup
 - `GET /encryption/keys/:userId/public`: retrieve a recipient's public encryption key
 - `POST /transfers/:id/envelopes`, `GET /transfers/:id/envelope`: store and retrieve participant-only encrypted file-key envelopes
 - `GET /transfers`: authenticated user's latest 100 sent transfers
 - `GET /transfers/received`: authenticated user's latest 100 files sent directly to their RAVEN account
+- `POST /transfers/:id/expiry`, `POST /transfers/:id/revoke-link`: manage active public share links
 - `POST /transfers`, `POST /transfers/:id/upload`: authenticated legacy single-request upload; include optional `recipientIdentifier` (username or email) when creating a direct account-to-account transfer
 - `POST /transfers/:id/chunks/start`, `GET /transfers/:id/chunks`, `PUT /transfers/:id/chunks/:index`, `POST /transfers/:id/chunks/complete`, `DELETE /transfers/:id/chunks`: authenticated chunked upload session, status, chunk receipt, assembly, and cancellation
 - `GET /transfers/:id`, `GET /transfers/:id/download`: authenticated sender or designated recipient
-- `GET /share/:token`: public token-based download
+- `GET /share/:token`, `GET /share/:token/download`: public token-based download; encrypted public shares record opens/downloads
 
 ## Chunked uploads
 
-The frontend sends 8 MiB chunks with up to three concurrent requests. Each chunk includes a SHA-256 digest in the `X-Chunk-Sha256` header; the backend verifies the digest and exact expected byte length before accepting it. Repeated identical chunk submissions are idempotent. Completion rechecks each stored chunk, assembles chunks in order, calculates a final SHA-256 digest, and only then marks the transfer complete. A failed upload can be retried in the same browser session and already-received chunks are skipped. The chunk manifest is stored in Neon, but chunk bytes are stored in the backend's local filesystem, so resuming after a Render restart is not guaranteed.
+The frontend sends 8 MiB chunks with up to three concurrent requests. Each chunk includes a SHA-256 digest in the `X-Chunk-Sha256` header; the backend verifies the digest and exact expected byte length before accepting it. Repeated identical chunk submissions are idempotent. When B2 is configured, chunk bytes are stored as private B2 objects and their object keys and integrity metadata are stored in Neon. Completion rechecks each chunk, assembles them in order in temporary server storage, uploads the completed object to B2, and only then marks the transfer complete. A failed upload can resume from B2-stored chunks after a browser or Render restart. Downloads are streamed through the authenticated API; bucket objects are never made public.
 
 ## Security and storage notes
 The API requires exact CORS origins and uses credentialed requests with Secure, HttpOnly, SameSite=None session cookies. The browser includes credentials with frontend API calls. State-changing browser requests are checked against the allowed Origin list. Do not use wildcard CORS.
 
-The current file store writes to the service's local filesystem. Render filesystems are ephemeral unless a persistent disk is configured. Uploaded files and profile photos can be lost during restarts or deploys. This is only suitable for temporary testing; configure a persistent disk or S3-compatible object storage before storing important files.
+When all five B2 environment variables are configured, transfers, upload chunks, and profile photos are stored in the private Backblaze B2 bucket. The API streams files to and from B2; the browser never receives B2 credentials and the bucket should remain private. The API retains a local-filesystem fallback for development when B2 is not configured. Do not put B2 credentials in frontend environment variables or commit them to GitHub. The server-side E2EE path sends ciphertext to storage; B2 does not receive the decryption keys.
 
 Never commit `.env`, database credentials, API keys, session cookies, or uploaded files.
 
