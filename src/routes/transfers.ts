@@ -12,20 +12,22 @@ import {SESSION_COOKIE_NAME,getAuthenticatedUser} from "../auth.js";
 
 type ChunkRow = {chunk_index:number;chunk_size:number;sha256:string;storage_path:string};
 type ChunkTransferRow = TransferRow & {chunk_size:number|null;chunk_count:number|null};
+type TransferStatsRow = TransferRow & { view_count?: number | string; download_count?: number | string };
 type ReceivedTransferRow = TransferRow & {
  sender_display_name:string;
  sender_username:string|null;
  sender_email:string;
 };
 
-function publicTransfer(row:TransferRow){
+function publicTransfer(row:TransferStatsRow){
  return {
   id:row.id,filename:row.encryption_version===1?"Encrypted file":row.filename,filesize:Number(row.filesize),status:row.status,
   encryptionVersion:row.encryption_version??0,
   createdAt:row.created_at,uploadedAt:row.uploaded_at,expiresAt:row.expires_at,
   downloadUrl:row.status==="completed"?config.publicBaseUrl+"/transfers/"+row.id+"/download":null,
   shareUrl:row.share_token?config.publicBaseUrl+"/share/"+row.share_token:null,
-  sha256:row.sha256
+  sha256:row.sha256,
+  viewCount:Number(row.view_count??0),downloadCount:Number(row.download_count??0)
  };
 }
 
@@ -343,7 +345,13 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
  app.get("/transfers",async(request,reply)=>{
   const user=await requireUser(request,reply);if(!user)return;
   await query("UPDATE transfers SET status='expired' WHERE user_id=$1 AND expires_at<=NOW() AND status IN ('pending','completed')",[user.id]);
-  const r=await query<TransferRow>("SELECT * FROM transfers WHERE user_id=$1 ORDER BY created_at DESC LIMIT 100",[user.id]);
+  const r=await query<TransferStatsRow>(
+   `SELECT t.*,
+      (SELECT COUNT(*)::int FROM transfer_events e WHERE e.transfer_id=t.id AND e.event_type='view') AS view_count,
+      (SELECT COUNT(*)::int FROM transfer_events e WHERE e.transfer_id=t.id AND e.event_type='download') AS download_count
+    FROM transfers t WHERE t.user_id=$1 ORDER BY t.created_at DESC LIMIT 100`,
+   [user.id]
+  );
   return {transfers:r.rows.map(publicTransfer)};
  });
 
@@ -487,6 +495,9 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
   const row=r.rows[0];
   if(!row)return reply.code(404).send({error:"Share link not found."});
   if(row.encryption_version===1)reply.header("Cache-Control","no-store, private");
+  if(row.status==="completed"&&(!row.expires_at||new Date(row.expires_at)>new Date())){
+   await query("INSERT INTO transfer_events(transfer_id,event_type) VALUES($1,$2)",[row.id,"download"]);
+  }
   return sendFile(reply,row);
  });
 
@@ -497,6 +508,41 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
   const row=r.rows[0];
   if(!row)return reply.code(404).send({error:"Share link not found."});
   if(row.encryption_version===1)return reply.code(409).send({error:"This is an encrypted share. Open it in the RAVEN web app to decrypt it locally."});
+  if(row.status==="completed"&&(!row.expires_at||new Date(row.expires_at)>new Date())){
+   await query("INSERT INTO transfer_events(transfer_id,event_type) VALUES($1,$2)",[row.id,"download"]);
+  }
   return sendFile(reply,row);
  });
+
+  app.post<{Params:{id:string}}>("/transfers/:id/revoke-link",async(request,reply)=>{
+   const user=await requireUser(request,reply);if(!user)return;
+   const result=await query<TransferRow>(
+    `UPDATE transfers SET status='revoked',expires_at=NOW()
+     WHERE id=$1 AND user_id=$2 AND recipient_user_id IS NULL
+       AND share_token IS NOT NULL AND status='completed'
+     RETURNING *`,
+    [request.params.id,user.id]
+   );
+   if(!result.rows[0])return reply.code(404).send({error:"Active share link not found."});
+   return {message:"Share link revoked.",transfer:publicTransfer(result.rows[0])};
+  });
+
+  app.post<{Params:{id:string};Body:{expiryHours?:number}}>("/transfers/:id/expiry",async(request,reply)=>{
+   const user=await requireUser(request,reply);if(!user)return;
+   const expiryHours=request.body?.expiryHours;
+   const allowed=[1,24,72,168,720];
+   if(!Number.isSafeInteger(expiryHours)||!allowed.includes(Number(expiryHours))){
+    return reply.code(400).send({error:"Choose an expiry of 1 hour, 1 day, 3 days, 7 days, or 30 days."});
+   }
+   const result=await query<TransferRow>(
+    `UPDATE transfers SET expires_at=NOW()+($3::int * INTERVAL '1 hour')
+     WHERE id=$1 AND user_id=$2 AND recipient_user_id IS NULL
+       AND share_token IS NOT NULL AND status='completed'
+     RETURNING *`,
+    [request.params.id,user.id,expiryHours]
+   );
+   if(!result.rows[0])return reply.code(404).send({error:"Active share link not found. Expired or revoked links cannot be extended."});
+   return {message:"Share link expiry updated.",transfer:publicTransfer(result.rows[0])};
+  });
+
 }
