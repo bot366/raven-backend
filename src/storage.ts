@@ -17,7 +17,7 @@ const PREFIX = "raven/";
 export function makeObjectKey(category:string, id:string, suffix=""):string {
  const safeCategory=category.replace(/[^a-z0-9-]/gi,"-");
  const safeId=id.replace(/[^a-z0-9-]/gi,"-");
- const safeSuffix=suffix.replace(/^\\/+|\\\\/g,"").replace(/[^a-z0-9._-]/gi,"_");
+ const safeSuffix=suffix.replace(/[\\/]/g,"").replace(/[^a-z0-9._-]/gi,"_");
  return PREFIX+safeCategory+"/"+safeId+(safeSuffix?"-"+safeSuffix:"");
 }
 export function isB2ObjectPath(value:string|null|undefined):boolean {
