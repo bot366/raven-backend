@@ -221,8 +221,8 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
     await deleteStoredPath(existing.rows[0].storage_path);
     await query("DELETE FROM transfer_chunks WHERE transfer_id=$1 AND chunk_index=$2",[transfer.id,index]);
    }
+   let storedPath=destination;
    try{
-    let storedPath=destination;
    if(b2StorageEnabled()){
     storedPath=await uploadObject(makeObjectKey("transfer-chunks",transfer.id,String(index)+"-"+randomUUID()),fs.createReadStream(destination),"application/octet-stream",byteCount);
     await unlink(destination).catch(()=>undefined);
@@ -237,6 +237,7 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
      return reply.code(409).send({error:"This transfer was cancelled before the chunk could be saved."});
     }
    }catch(error){
+    await deleteStoredPath(storedPath);
     await unlink(destination).catch(()=>undefined);
     if(typeof error==="object"&&error!==null&&"code" in error&&error.code==="23505"){
      return reply.code(409).send({error:"This chunk was received simultaneously. Check upload status and retry if needed."});
