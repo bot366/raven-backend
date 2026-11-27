@@ -92,6 +92,7 @@ export async function encryptionRoutes(app: FastifyInstance): Promise<void> {
   app.post<{ Params: { id: string }; Body: EnvelopeBody }>("/transfers/:id/envelopes", async (request, reply) => {
     const user = await requireUser(request, reply);
     if (!user) return;
+    if (!user.emailVerified) return reply.code(403).send({ error: "Verify your email address before accessing transfers.", code: "EMAIL_NOT_VERIFIED" });
     const transferResult = await query<{ id: string; user_id: string; recipient_user_id: string | null; status: string; encryption_version: number }>(
       "SELECT id, user_id, recipient_user_id, status, encryption_version FROM transfers WHERE id=$1 AND user_id=$2",
       [request.params.id, user.id]
@@ -162,6 +163,7 @@ export async function encryptionRoutes(app: FastifyInstance): Promise<void> {
       `SELECT t.id, t.encryption_version, t.encrypted_metadata, t.metadata_nonce
        FROM transfers t
        WHERE t.share_token=$1 AND t.encryption_version=1
+         AND EXISTS (SELECT 1 FROM users owner WHERE owner.id=t.user_id AND owner.email_verified=TRUE)
          AND t.status='completed' AND (t.expires_at IS NULL OR t.expires_at>NOW())
          AND EXISTS (
            SELECT 1 FROM transfer_key_envelopes e
@@ -178,6 +180,7 @@ export async function encryptionRoutes(app: FastifyInstance): Promise<void> {
   app.get<{ Params: { id: string } }>("/transfers/:id/envelope", async (request, reply) => {
     const user = await requireUser(request, reply);
     if (!user) return;
+    if (!user.emailVerified) return reply.code(403).send({ error: "Verify your email address before accessing transfers.", code: "EMAIL_NOT_VERIFIED" });
     const result = await query(
       `SELECT t.id, t.user_id AS sender_user_id, t.encryption_version, t.encrypted_metadata, t.metadata_nonce,
               e.key_version, e.enc, e.ciphertext, sender.public_key AS sender_public_key
