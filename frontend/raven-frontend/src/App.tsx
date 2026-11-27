@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ChangeEvent, type DragEvent, type FormEvent } from "react";
 import {
   cacheEncryptionIdentity, clearCachedEncryptionIdentity, createEncryptionIdentity, createTransferEncryptionSession,
-  decryptTransferChunk, decryptTransferMetadata, encodeBase64, getCachedEncryptionIdentity,
+  decryptTransferChunk, decryptTransferMetadata, encodeBase64, getCachedEncryptionIdentity, importShareFileKey,
   encryptTransferChunk, getKeyFingerprint, unlockEncryptionIdentity, unwrapTransferKey,
   verifyAndPinPeerKey,
   type StoredEncryptionKey, type TransferEncryptionSession
@@ -33,6 +33,9 @@ type DeliveryState = "idle" | "preparing" | "flying" | "success" | "error";
 
 const API = (import.meta.env.VITE_API_URL || "https://raven-backend-qg3w.onrender.com").replace(/\/$/, "");
 const MAX_MB = Number(import.meta.env.VITE_MAX_FILE_SIZE_MB || 100);
+
+// Share-link secrets remain in this tab's memory only. The server never stores the fragment key.
+const encryptedShareLinks = new Map<string, string>();
 
 async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers = new Headers(options.headers);
@@ -164,6 +167,94 @@ function RavenMark() {
 function DeliveryRaven() {
   return <svg className="delivery-raven" viewBox="0 0 120 82" role="img" aria-label="Cartoon raven carrying a file"><g className="raven-body"><path d="M18 48c2-18 17-31 36-31 16 0 27 8 32 21l19 4-15 8c-5 14-18 22-36 22-16 0-29-8-36-24Z" fill="#171923" stroke="#aaa0d7" strokeWidth="2.4"/><path className="raven-wing" d="M31 43c9-18 25-25 42-18 11 5 15 15 12 24-12-7-25-4-36 9-7-4-13-9-18-15Z" fill="#343348" stroke="#aaa0d7" strokeWidth="2"/><circle cx="81" cy="34" r="3" fill="#f5d98a"/><path d="m101 42 16 4-16 5" fill="#d8a85d"/><path d="M49 68l-2 8m22-8 2 8" stroke="#d8a85d" strokeWidth="2.5" strokeLinecap="round"/><path d="M43 49h24v17H43z" fill="#b9a8f3" stroke="#e4dcff" strokeWidth="1.5"/><path d="M49 54h12m-12 4h9" stroke="#4a406e" strokeWidth="1.5" strokeLinecap="round"/></g></svg>;
 }
+function PublicEncryptedShare({ token, shareKey }: { token: string; shareKey: string }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [complete, setComplete] = useState(false);
+
+  const decryptAndDownload = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      if (!shareKey) throw new Error("This link is missing its decryption key. Ask the sender for the complete encrypted share link.");
+      const envelopeResponse = await fetch(API + "/share/" + encodeURIComponent(token) + "/envelope", {
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+      });
+      const envelopeBody = await envelopeResponse.json().catch(() => null) as {
+        envelope?: { id: string; encryption_version: number; encrypted_metadata: string; metadata_nonce: string };
+        error?: string;
+      } | null;
+      if (!envelopeResponse.ok || !envelopeBody?.envelope) {
+        throw new Error(envelopeBody?.error || "This encrypted share is unavailable or has expired.");
+      }
+      const envelope = envelopeBody.envelope;
+      if (envelope.encryption_version !== 1 || !envelope.id || !envelope.encrypted_metadata || !envelope.metadata_nonce) {
+        throw new Error("This link does not contain a supported encrypted file.");
+      }
+      const fileKey = await importShareFileKey(shareKey);
+      const metadata = await decryptTransferMetadata(fileKey, envelope.id, envelope.encrypted_metadata, envelope.metadata_nonce);
+      const response = await fetch(API + "/share/" + encodeURIComponent(token) + "/download", { cache: "no-store" });
+      if (!response.ok) throw new Error("Could not retrieve the encrypted file (" + response.status + ").");
+      const encryptedBlob = await response.blob();
+      const expectedCipherSize = metadata.originalSize + metadata.chunkCount * 16;
+      if (encryptedBlob.size !== expectedCipherSize) throw new Error("Encrypted file size does not match its authenticated metadata.");
+
+      const pieces: BlobPart[] = [];
+      let offset = 0;
+      let recoveredSize = 0;
+      for (let index = 0; index < metadata.chunkCount; index++) {
+        const plainSize = Math.min(metadata.plaintextChunkSize, metadata.originalSize - index * metadata.plaintextChunkSize);
+        const cipherSize = plainSize + 16;
+        const cipherBytes = await encryptedBlob.slice(offset, offset + cipherSize).arrayBuffer();
+        const plaintext = await decryptTransferChunk(
+          fileKey, envelope.id, index, metadata.chunkCount, metadata.noncePrefix, cipherBytes
+        );
+        if (plaintext.length !== plainSize) throw new Error("A decrypted chunk has an unexpected size.");
+        pieces.push(plaintext.buffer.slice(plaintext.byteOffset, plaintext.byteOffset + plaintext.byteLength) as ArrayBuffer);
+        offset += cipherSize;
+        recoveredSize += plaintext.length;
+      }
+      if (recoveredSize !== metadata.originalSize || offset !== encryptedBlob.size) {
+        throw new Error("The decrypted file did not pass its size checks.");
+      }
+      const fileBlob = new Blob(pieces, { type: metadata.mimeType || "application/octet-stream" });
+      const objectUrl = URL.createObjectURL(fileBlob);
+      try {
+        const anchor = document.createElement("a");
+        anchor.href = objectUrl;
+        anchor.download = metadata.filename.replace(/[\\/\\r\\n]/g, "_").slice(0, 255) || "download";
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+      } finally {
+        window.setTimeout(() => URL.revokeObjectURL(objectUrl), 30_000);
+      }
+      setComplete(true);
+    } catch (downloadError) {
+      setError(downloadError instanceof Error ? downloadError.message : "Could not decrypt this share.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return <div className="auth-shell">
+    <header className="auth-topbar"><a className="brand" href="/"><span className="brand-mark"><RavenMark /></span>RAVEN</a><span className="auth-top-note">ENCRYPTED FILE SHARE</span></header>
+    <main className="auth-main">
+      <section className="auth-intro"><div className="eyebrow"><span className="eyebrow-line"/> PRIVATE FILE SHARING</div><h1>Your file.<br/><span>Your key.</span></h1><p>This file is encrypted. It will be decrypted in your browser after you select the button.</p><div className="auth-features"><span>✓ Decryption happens on this device</span><span>✓ The server never receives the link key</span><span>✓ No RAVEN account required</span></div><div className="auth-mascot"><DeliveryRaven/><span>A little bird for your files.</span></div></section>
+      <section className="auth-card">
+        <div className="auth-card-heading"><p className="section-kicker">PRIVATE SHARE</p><h2>{complete ? "Download started" : "Ready to decrypt"}</h2><p>{complete ? "Your browser received the decrypted file." : "Use the complete link from the sender. Only the encrypted file is downloaded before local decryption."}</p></div>
+        {!shareKey && <div className="form-alert" role="alert">This link is missing its decryption key. Ask the sender to copy and send the full link, including everything after the # symbol.</div>}
+        {error && <div className="form-alert" role="alert">{error}</div>}
+        <button className="primary-button" type="button" onClick={() => void decryptAndDownload()} disabled={busy || !shareKey}>{busy ? "Decrypting file…" : complete ? "Download again" : "Decrypt & download"} <Icon name="download"/></button>
+        <div className="auth-card-foot"><Icon name="check"/> The key is kept in this page and is not sent in API requests.</div>
+      </section>
+    </main>
+    <footer className="auth-footer"><span>RAVEN / File sharing, simplified.</span><a href="/">Back to RAVEN</a></footer>
+  </div>;
+}
+
 function App() {
   const [user, setUser] = useState<User | null>(null);
   const [checking, setChecking] = useState(true);
@@ -275,7 +366,10 @@ function App() {
   };
   const selectPage = (next: Page) => { setPage(next); setMenuOpen(false); setPageError(""); };
   const openSend = () => { setSendOpen(true); setMenuOpen(false); };
+  const shareToken = new URLSearchParams(window.location.search).get("share");
+  const shareKey = new URLSearchParams(window.location.hash.slice(1)).get("key") || "";
 
+  if (shareToken) return <PublicEncryptedShare token={shareToken} shareKey={shareKey}/>;
   if (checking) return <div className="loading-screen"><span className="brand-mark"><RavenMark /></span><span>Preparing your workspace…</span></div>;
 
   if (!user) return (
@@ -415,10 +509,11 @@ function TransferRow({ transfer, kind, onCopy, userId }: { transfer: Transfer; k
   const received = kind === "received";
   const title = kind === "link" ? "Share link" : received ? "Received file" : "Sent file";
   const downloadUrl = API + "/transfers/" + encodeURIComponent(transfer.id) + "/download";
+  const shareLink = transfer.encryptionVersion === 1 ? encryptedShareLinks.get(transfer.id) : transfer.shareUrl;
   const copy = async () => {
-    if (!transfer.shareUrl) return;
+    if (!shareLink) return;
     try {
-      await navigator.clipboard.writeText(transfer.shareUrl);
+      await navigator.clipboard.writeText(shareLink);
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1400);
     } catch { onCopy?.("Clipboard unavailable. Open the share link and copy it manually."); }
@@ -429,8 +524,9 @@ function TransferRow({ transfer, kind, onCopy, userId }: { transfer: Transfer; k
     <span className={"transfer-type type-" + kind}>{title}</span>
     {transfer.status === "completed" && transfer.encryptionVersion === 1 && userId && <button className="outline-button download-button" type="button" disabled={downloading} onClick={() => void downloadEncrypted()}><Icon name="lock"/>{downloading ? "Decrypting…" : "Decrypt & download"}</button>}
     {received && transfer.status === "completed" && transfer.encryptionVersion !== 1 && <a className="outline-button download-button" href={downloadUrl}><Icon name="download"/> Download</a>}
-    {kind === "link" && transfer.shareUrl && <button className="outline-button" onClick={() => void copy()}><Icon name="copy"/> {copied ? "Copied" : "Copy link"}</button>}
-    {!received && kind !== "link" && transfer.shareUrl && <button className="quiet-icon-button" title="Copy share link" onClick={() => void copy()}><Icon name="copy"/></button>}
+    {kind === "link" && shareLink && <button className="outline-button" onClick={() => void copy()}><Icon name="copy"/> {copied ? "Copied" : "Copy link"}</button>}
+    {kind === "link" && transfer.encryptionVersion === 1 && !shareLink && <span className="transfer-type">Link key only available in the send confirmation</span>}
+    {!received && kind !== "link" && shareLink && <button className="quiet-icon-button" title="Copy share link" onClick={() => void copy()}><Icon name="copy"/></button>}
     {transfer.status !== "completed" && <span className={"status-tag status-" + transfer.status}>{transfer.status}</span>}
   </article>;
 }
@@ -657,12 +753,8 @@ function SendModal({ userId, onClose, onComplete }: { userId: string; onClose: (
     event.preventDefault();
     if (!selected || busy || delivery === "success") return;
     setError(""); setRecipientError(""); setShareUrl("");
-    if (!recipient.trim()) {
-      setError("Encrypted transfers currently require a recipient with a RAVEN account. Public share links are not encrypted yet.");
-      return;
-    }
     let resolvedRecipient = recipientMatch;
-    if (!resolvedRecipient) {
+    if (recipient.trim() && !resolvedRecipient) {
       resolvedRecipient = await lookupRecipient();
       if (!resolvedRecipient) return;
     }
@@ -672,11 +764,14 @@ function SendModal({ userId, onClose, onComplete }: { userId: string; onClose: (
     let activeId = transferId;
     try {
       const senderIdentity = await requireUnlockedEncryptionIdentity(userId);
-      const recipientKeyResult = await api<{ key: { user_id: string; key_version: number; public_key: string } }>(
-        "/encryption/keys/" + encodeURIComponent(resolvedRecipient.id) + "/public"
-      );
-      const recipientKey = recipientKeyResult.key;
-      await verifyAndPinPeerKey(userId, recipientKey.user_id, recipientKey.public_key, "the recipient");
+      let recipientKey: { user_id: string; key_version: number; public_key: string } | null = null;
+      if (resolvedRecipient) {
+        const recipientKeyResult = await api<{ key: { user_id: string; key_version: number; public_key: string } }>(
+          "/encryption/keys/" + encodeURIComponent(resolvedRecipient.id) + "/public"
+        );
+        recipientKey = recipientKeyResult.key;
+        await verifyAndPinPeerKey(userId, recipientKey.user_id, recipientKey.public_key, "the recipient");
+      }
 
       if (!activeId) {
         const chunkCount = Math.max(1, Math.ceil(selected.size / CHUNK_SIZE));
@@ -689,7 +784,7 @@ function SendModal({ userId, onClose, onComplete }: { userId: string; onClose: (
           body: JSON.stringify({
             filename: "Encrypted file",
             filesize: encryptedSize,
-            recipientIdentifier: recipient.trim(),
+            recipientIdentifier: resolvedRecipient ? recipient.trim() : undefined,
             encryptionVersion: 1
           })
         });
@@ -708,9 +803,9 @@ function SendModal({ userId, onClose, onComplete }: { userId: string; onClose: (
           userId,
           senderIdentity.pair,
           senderIdentity.keyVersion,
-          recipientKey.user_id,
-          recipientKey.public_key,
-          Number(recipientKey.key_version)
+          recipientKey?.user_id ?? null,
+          recipientKey?.public_key ?? null,
+          recipientKey ? Number(recipientKey.key_version) : null
         );
       }
       const session = encryptionSession.current;
@@ -779,10 +874,17 @@ function SendModal({ userId, onClose, onComplete }: { userId: string; onClose: (
       await Promise.all(Array.from({ length: Math.min(CONCURRENT_CHUNKS, session.chunkCount) }, () => worker()));
       if (cancelled.current) return;
       if (completedBytes < session.cipherSize) throw new Error("Some encrypted chunks are still missing. Retry the delivery to continue.");
-      await api("/transfers/" + encodeURIComponent(activeId) + "/chunks/complete", {
+      const completion = await api<{ shareUrl?: string | null }>("/transfers/" + encodeURIComponent(activeId) + "/chunks/complete", {
         method: "POST", body: "{}"
       });
-      setShareUrl("");
+      let completedShareLink = "";
+      if (!resolvedRecipient && completion.shareUrl) {
+        const shareTokenFromApi = new URL(completion.shareUrl).pathname.split("/").filter(Boolean).pop();
+        if (!shareTokenFromApi) throw new Error("The server completed the encrypted upload but did not return a valid share token.");
+        completedShareLink = window.location.origin + "/?share=" + encodeURIComponent(shareTokenFromApi) + "#key=" + encodeURIComponent(session.shareKey);
+        encryptedShareLinks.set(activeId, completedShareLink);
+      }
+      setShareUrl(completedShareLink);
       setProgress(100); setDelivery("success"); setSelected(null); setTransferId(null);
       encryptionSession.current = null;
       if (fileInput.current) fileInput.current.value = "";
@@ -810,7 +912,7 @@ function SendModal({ userId, onClose, onComplete }: { userId: string; onClose: (
   return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) dismiss(); }}>
     <form className="dialog-card send-dialog" onSubmit={(event) => void send(event)}>
       <div className="dialog-heading"><div><span className="section-kicker">ENCRYPTED DELIVERY</span><h2>Send a file</h2><p>Your file is encrypted on this device before upload.</p></div><button className="icon-button close-dialog" type="button" onClick={dismiss} disabled={busy} aria-label="Close"><Icon name="close"/></button></div>
-      <label className="field-label">Recipient <span className="optional-label">Required for encryption</span><input value={recipient} onChange={(event) => { setRecipient(event.target.value); setRecipientMatch(null); setRecipientError(""); }} onBlur={() => { if (recipient.trim() && !transferId) void lookupRecipient(); }} placeholder="Email address or @username" disabled={busy || Boolean(transferId)}/></label>
+      <label className="field-label">Recipient <span className="optional-label">Optional · leave blank for an encrypted share link</span><input value={recipient} onChange={(event) => { setRecipient(event.target.value); setRecipientMatch(null); setRecipientError(""); }} onBlur={() => { if (recipient.trim() && !transferId) void lookupRecipient(); }} placeholder="Email address or @username (optional)" disabled={busy || Boolean(transferId)}/></label>
       {recipientMatch && <div className="recipient-confirm"><Avatar user={{ id: "recipient", displayName: recipientMatch.displayName, username: recipientMatch.username, email: "" }} size="small"/><div><strong>{recipientMatch.displayName}</strong><span>@{recipientMatch.username}</span></div><Icon name="check"/></div>}
       {recipientError && <div className="form-alert">{recipientError}</div>}
       <div className="field-label">File to send
@@ -830,7 +932,7 @@ function SendModal({ userId, onClose, onComplete }: { userId: string; onClose: (
         <button className="secondary-action" type="button" onClick={() => busy ? void cancelUpload() : dismiss()}>{busy ? "Cancel upload" : delivery === "success" ? "Done" : "Cancel"}</button>
         <button className="primary-button send-submit" type="submit" disabled={!selected || busy || delivery === "success"}>{busy ? "Sending chunks…" : delivery === "success" ? "Sent successfully" : transferId ? <>Retry delivery <Icon name="send"/></> : <>Send file <Icon name="send"/></>}</button>
       </div>
-      <p className="modal-footnote">RAVEN encrypts each file chunk on your device. Only the recipient's account and your own account receive a wrapped decryption key. Public share links are not yet supported for encrypted files.</p>
+      <p className="modal-footnote">RAVEN encrypts each file chunk on your device. Direct transfers wrap the decryption key for both accounts. For a public share link, anyone with the complete link (including its key after #) can decrypt the file. Copy and share that link carefully; RAVEN does not store the link key.</p>
     </form>
   </div>;
 }
