@@ -154,7 +154,7 @@ function initials(value: string): string {
   const parts = value.trim().split(/[\s._-]+/).filter(Boolean);
   return (parts.length > 1 ? parts[0][0] + parts[1][0] : (parts[0] || "R").slice(0, 2)).toUpperCase();
 }
-function Avatar({ user, imageUrl, size = "medium" }: { user: User; imageUrl?: string; size?: "small" | "medium" | "large" }) {
+function Avatar({ user, imageUrl, size = "medium" }: { user: Pick<User, "displayName" | "username">; imageUrl?: string; size?: "small" | "medium" | "large" }) {
   return <span className={"avatar avatar-" + size}>{imageUrl ? <img src={imageUrl} alt="" /> : initials(user.username || user.displayName)}</span>;
 }
 function Icon({ name }: { name: string }) {
@@ -1221,7 +1221,7 @@ function SendModal({ userId, onClose, onComplete }: { userId: string; onClose: (
     <form className="dialog-card send-dialog" onSubmit={(event) => void send(event)}>
       <div className="dialog-heading"><div><span className="section-kicker">ENCRYPTED DELIVERY</span><h2>Send a file</h2><p>Your file is encrypted on this device before upload.</p></div><button className="icon-button close-dialog" type="button" onClick={dismiss} disabled={busy} aria-label="Close"><Icon name="close"/></button></div>
       <label className="field-label">Recipient <span className="optional-label">Optional · leave blank for an encrypted share link</span><input value={recipient} onChange={(event) => { setRecipient(event.target.value); setRecipientMatch(null); setRecipientError(""); }} onBlur={() => { if (recipient.trim() && !transferId) void lookupRecipient(); }} placeholder="Email address or @username (optional)" disabled={busy || Boolean(transferId)}/></label>
-      {recipientMatch && <div className="recipient-confirm"><Avatar user={{ id: "recipient", displayName: recipientMatch.displayName, username: recipientMatch.username, email: "" }} size="small"/><div><strong>{recipientMatch.displayName}</strong><span>@{recipientMatch.username}</span></div><Icon name="check"/></div>}
+      {recipientMatch && <div className="recipient-confirm"><Avatar user={{ displayName: recipientMatch.displayName, username: recipientMatch.username }} size="small"/><div><strong>{recipientMatch.displayName}</strong><span>@{recipientMatch.username}</span></div><Icon name="check"/></div>}
       {recipientError && <div className="form-alert">{recipientError}</div>}
       <div className="field-label">File to send
         <div className={"file-drop-zone" + (dragging ? " dragging" : "")} onDragEnter={(event) => { event.preventDefault(); setDragging(true); }} onDragOver={(event) => event.preventDefault()} onDragLeave={(event) => { event.preventDefault(); if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false); }} onDrop={onDrop} onClick={() => !busy && !transferId && fileInput.current?.click()} role="button" tabIndex={0} onKeyDown={(event) => { if ((event.key === "Enter" || event.key === " ") && !busy && !transferId) fileInput.current?.click(); }}>
