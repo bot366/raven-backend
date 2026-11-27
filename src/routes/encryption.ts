@@ -166,15 +166,14 @@ export async function encryptionRoutes(app: FastifyInstance): Promise<void> {
 
   app.get<{ Params: { token: string } }>("/share/:token/envelope", async (request, reply) => {
     const result = await query(
-      `SELECT t.id, t.user_id AS sender_user_id, t.encryption_version,
-              t.encrypted_metadata, t.metadata_nonce,
-              e.key_version, e.enc, e.ciphertext,
-              sender.public_key AS sender_public_key
+      `SELECT t.id, t.encryption_version, t.encrypted_metadata, t.metadata_nonce
        FROM transfers t
-       JOIN transfer_key_envelopes e ON e.transfer_id=t.id AND e.user_id=t.user_id
-       JOIN user_encryption_keys sender ON sender.user_id=t.user_id
        WHERE t.share_token=$1 AND t.encryption_version=1
-         AND t.status='completed' AND (t.expires_at IS NULL OR t.expires_at>NOW())`,
+         AND t.status='completed' AND (t.expires_at IS NULL OR t.expires_at>NOW())
+         AND EXISTS (
+           SELECT 1 FROM transfer_key_envelopes e
+           WHERE e.transfer_id=t.id AND e.user_id=t.user_id
+         )`,
       [request.params.token]
     );
     if (!result.rows[0]) return reply.code(404).send({ error: "Encrypted share not found or expired." });
