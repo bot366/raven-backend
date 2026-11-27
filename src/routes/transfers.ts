@@ -158,7 +158,7 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
    [transfer.id]
   );
   const validReceived=[] as typeof received.rows;
-  for(const chunk of received.rows){if(await verifyStoredChunk(chunk))validReceived.push(chunk);else{await unlink(chunk.storage_path).catch(()=>undefined);await query("DELETE FROM transfer_chunks WHERE transfer_id=$1 AND chunk_index=$2",[transfer.id,chunk.chunk_index]);}}
+  for(const chunk of received.rows){if(await verifyStoredChunk(chunk))validReceived.push(chunk);else{await deleteStoredPath(chunk.storage_path);await query("DELETE FROM transfer_chunks WHERE transfer_id=$1 AND chunk_index=$2",[transfer.id,chunk.chunk_index]);}}
   return {
    transferId:transfer.id,chunkSize:transfer.chunk_size,chunkCount:transfer.chunk_count,
    receivedChunks:validReceived.map(({chunk_index,chunk_size,sha256})=>({chunk_index,chunk_size,sha256})),
