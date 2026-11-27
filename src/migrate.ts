@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS users (
 ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_path TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_mime_type TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN NOT NULL DEFAULT FALSE;
 CREATE UNIQUE INDEX IF NOT EXISTS users_email_unique ON users(LOWER(email));
 CREATE UNIQUE INDEX IF NOT EXISTS users_username_unique ON users(LOWER(username)) WHERE username IS NOT NULL;
 
@@ -39,6 +40,16 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 ALTER TABLE transfers ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users(id) ON DELETE SET NULL;
 ALTER TABLE transfers ADD COLUMN IF NOT EXISTS recipient_user_id UUID REFERENCES users(id) ON DELETE SET NULL;
+
+
+CREATE TABLE IF NOT EXISTS email_verification_tokens (
+ id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+ user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+ token_hash TEXT NOT NULL UNIQUE,
+ expires_at TIMESTAMPTZ NOT NULL,
+ used_at TIMESTAMPTZ,
+ created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 
 CREATE TABLE IF NOT EXISTS transfer_chunks (
  transfer_id UUID NOT NULL REFERENCES transfers(id) ON DELETE CASCADE,
@@ -55,6 +66,7 @@ CREATE INDEX IF NOT EXISTS sessions_expires_at_idx ON sessions(expires_at);
 CREATE INDEX IF NOT EXISTS transfers_user_id_created_at_idx ON transfers(user_id,created_at DESC);
 CREATE INDEX IF NOT EXISTS transfers_recipient_created_at_idx ON transfers(recipient_user_id,created_at DESC);
 CREATE INDEX IF NOT EXISTS transfer_chunks_transfer_id_idx ON transfer_chunks(transfer_id);
+CREATE INDEX IF NOT EXISTS email_verification_tokens_user_created_idx ON email_verification_tokens(user_id,created_at DESC);
 
 CREATE TABLE IF NOT EXISTS user_encryption_keys (
  user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
@@ -101,6 +113,8 @@ try {
       to_regclass('public.users') AS users_table,
       to_regclass('public.sessions') AS sessions_table,
       to_regclass('public.transfer_chunks') AS transfer_chunks_table,
+      to_regclass('public.email_verification_tokens') AS verification_tokens_table,
+      EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='users' AND column_name='email_verified') AS email_verified_column,
       EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='transfers' AND column_name='sha256') AS transfer_sha256_column
   `);
   console.log("RAVEN database migration completed:", result.rows[0]);
