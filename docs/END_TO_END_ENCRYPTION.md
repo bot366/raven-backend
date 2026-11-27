@@ -1,6 +1,6 @@
 # RAVEN End-to-End Encryption (E2EE) Design
 
-Status: experimental direct account-to-account implementation is on branch `raven-e2ee-design` in draft PR #7. It is not merged or deployed. Public share-link encryption and key transparency are not implemented.
+Status: experimental direct account-to-account encryption and encrypted public share links are implemented on branch `raven-e2ee-design` in draft PR #7. They are not merged or deployed. Key transparency, safe key rotation, and independent audit are not implemented.
 
 ## 1. Security goal
 
@@ -60,6 +60,7 @@ This prevents an otherwise valid envelope from being replayed or swapped across 
 - Fingerprints are SHA-256 over the raw uncompressed P-256 public key.
 - On first contact, the sender must compare the recipient's fingerprint with a value the recipient shared out-of-band through a separate trusted channel, such as an in-person comparison or voice call.
 - On receipt, the recipient performs the same verification for the sender.
+- Public encrypted share links use a random DEK in the URL fragment (`#key=...`). URL fragments are not sent in HTTP requests, so the server receives the token but not the decryption key. Anyone who receives the complete link can decrypt the file. The browser uses the fragment key to decrypt locally; the server stores only ciphertext and the sender envelope.
 - The browser stores verified fingerprints per local-account/peer-account pair. A changed fingerprint is rejected, not silently accepted.
 - Clearing browser site data removes local pins; contacts must be verified again.
 
@@ -78,8 +79,8 @@ This is out-of-band verification with local pinning, not a key-transparency serv
 
 ## 5. Compatibility and exclusions
 
-- The E2EE flow currently supports direct RAVEN account-to-account transfers only.
-- Public share links are not encrypted in this iteration; the encrypted send UI requires an account recipient.
+- Direct RAVEN account-to-account transfers and public encrypted share links are supported in this branch.
+- Public links are bearer secrets: anyone with the complete link can decrypt the file. RAVEN does not store the fragment key. It is retained only in the current tab's memory so the sender can copy it again while that tab remains open; after reload, the full link must be recovered from the sender's original copy or recreated with a new transfer.
 - Existing transfers remain legacy/plaintext.
 - The server cannot retroactively encrypt old files without reading plaintext.
 - Key rotation and safe replacement/revocation are not implemented.
@@ -95,6 +96,7 @@ The CI suite currently covers:
 - Rejection of wrong recipient, wrong envelope purpose and wrong transfer ID.
 - Fingerprint normalization, first-contact pinning, and rejecting a changed peer key.
 - AES-GCM metadata/chunk round trip.
+- Public-share sender-only envelope and fragment-key decryption round trip.
 - Rejection of altered ciphertext and metadata nonce.
 
 These tests are important regression checks, not a full security audit or complete browser/backend integration suite.
@@ -104,10 +106,11 @@ These tests are important regression checks, not a full security audit or comple
 1. Independent cryptographic and application security review.
 2. Safer key rotation/recovery and explicit key-change UX.
 3. Key transparency or a stronger authenticated contact directory.
-4. Public share-link fragment-key encryption.
-5. Browser integration tests across supported browsers and devices.
-6. Replay/authorization testing and large-file memory/performance testing.
-7. Review frontend delivery integrity and XSS/content security controls.
+4. Browser integration tests across supported browsers and devices, including shared links opened in a separate browser.
+5. Replay/authorization testing and large-file memory/performance testing.
+6. Safe key rotation/replacement and better recovery after loss of the recovery code.
+7. Key transparency or a stronger authenticated contact directory.
+8. Review frontend delivery integrity and XSS/content security controls.
 
 The implementation remains experimental. Test only with disposable, non-sensitive files until all remaining work and an independent review are complete.
 
