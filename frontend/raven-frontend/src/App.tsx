@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ChangeEvent, type DragEvent, type FormEvent } from "react";
 import {
   cacheEncryptionIdentity, clearCachedEncryptionIdentity, createEncryptionIdentity, createTransferEncryptionSession,
-  decryptTransferChunk, decryptTransferMetadata, encodeBase64, getCachedEncryptionIdentity, importShareFileKey,
+  decryptTransferChunk, decryptTransferMetadata, decryptTransferStreamToBlob, encodeBase64, getCachedEncryptionIdentity, importShareFileKey,
   encryptTransferChunk, getKeyFingerprint, unlockEncryptionIdentity, unwrapTransferKey,
   verifyAndPinPeerKey,
   type StoredEncryptionKey, type TransferEncryptionSession
@@ -119,26 +119,9 @@ async function decryptAndDownloadTransfer(transferId: string, userId: string): P
   const metadata = await decryptTransferMetadata(fileKey, transferId, envelope.encrypted_metadata, envelope.metadata_nonce);
   const response = await fetch(API + "/transfers/" + encodeURIComponent(transferId) + "/download", { credentials: "include" });
   if (!response.ok) throw new Error("Could not retrieve the encrypted file (" + response.status + ").");
-  const encryptedBlob = await response.blob();
-  const expectedCipherSize = metadata.originalSize + metadata.chunkCount * 16;
-  if (encryptedBlob.size !== expectedCipherSize) throw new Error("Encrypted file size does not match its authenticated metadata.");
-  const pieces: BlobPart[] = [];
-  let offset = 0;
-  let recoveredSize = 0;
-  for (let index = 0; index < metadata.chunkCount; index++) {
-    const plainSize = Math.min(metadata.plaintextChunkSize, metadata.originalSize - index * metadata.plaintextChunkSize);
-    const cipherSize = plainSize + 16;
-    const cipherBytes = await encryptedBlob.slice(offset, offset + cipherSize).arrayBuffer();
-    const plaintext = await decryptTransferChunk(fileKey, transferId, index, metadata.chunkCount, metadata.noncePrefix, cipherBytes);
-    if (plaintext.length !== plainSize) throw new Error("A decrypted chunk has an unexpected size.");
-    pieces.push(plaintext.buffer.slice(plaintext.byteOffset, plaintext.byteOffset + plaintext.byteLength) as ArrayBuffer);
-    offset += cipherSize;
-    recoveredSize += plaintext.length;
-  }
-  if (recoveredSize !== metadata.originalSize || offset !== encryptedBlob.size) {
-    throw new Error("The decrypted file did not pass its size checks.");
-  }
-  const fileBlob = new Blob(pieces, { type: metadata.mimeType || "application/octet-stream" });
+  const fileBlob = await decryptTransferStreamToBlob(
+    fileKey, transferId, metadata, response.body,
+  );
   const objectUrl = URL.createObjectURL(fileBlob);
   try {
     const anchor = document.createElement("a");
@@ -224,29 +207,9 @@ function PublicEncryptedShare({ token, shareKey }: { token: string; shareKey: st
       const metadata = await decryptTransferMetadata(fileKey, envelope.id, envelope.encrypted_metadata, envelope.metadata_nonce);
       const response = await fetch(API + "/share/" + encodeURIComponent(token) + "/download", { cache: "no-store" });
       if (!response.ok) throw new Error("Could not retrieve the encrypted file (" + response.status + ").");
-      const encryptedBlob = await response.blob();
-      const expectedCipherSize = metadata.originalSize + metadata.chunkCount * 16;
-      if (encryptedBlob.size !== expectedCipherSize) throw new Error("Encrypted file size does not match its authenticated metadata.");
-
-      const pieces: BlobPart[] = [];
-      let offset = 0;
-      let recoveredSize = 0;
-      for (let index = 0; index < metadata.chunkCount; index++) {
-        const plainSize = Math.min(metadata.plaintextChunkSize, metadata.originalSize - index * metadata.plaintextChunkSize);
-        const cipherSize = plainSize + 16;
-        const cipherBytes = await encryptedBlob.slice(offset, offset + cipherSize).arrayBuffer();
-        const plaintext = await decryptTransferChunk(
-          fileKey, envelope.id, index, metadata.chunkCount, metadata.noncePrefix, cipherBytes
-        );
-        if (plaintext.length !== plainSize) throw new Error("A decrypted chunk has an unexpected size.");
-        pieces.push(plaintext.buffer.slice(plaintext.byteOffset, plaintext.byteOffset + plaintext.byteLength) as ArrayBuffer);
-        offset += cipherSize;
-        recoveredSize += plaintext.length;
-      }
-      if (recoveredSize !== metadata.originalSize || offset !== encryptedBlob.size) {
-        throw new Error("The decrypted file did not pass its size checks.");
-      }
-      const fileBlob = new Blob(pieces, { type: metadata.mimeType || "application/octet-stream" });
+      const fileBlob = await decryptTransferStreamToBlob(
+        fileKey, envelope.id, metadata, response.body,
+      );
       const objectUrl = URL.createObjectURL(fileBlob);
       try {
         const anchor = document.createElement("a");
