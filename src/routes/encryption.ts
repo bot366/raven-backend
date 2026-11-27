@@ -121,7 +121,7 @@ export async function encryptionRoutes(app: FastifyInstance): Promise<void> {
       }
       seen.add(envelope.userId);
     }
-    if (seen.size !== 2) return reply.code(400).send({ error: "Both sender and recipient key envelopes are required." });
+    if (seen.size !== requiredEnvelopeCount) return reply.code(400).send({ error: "A key envelope is required for every transfer participant." });
 
     for (const envelope of envelopes) {
       const currentKey = await query<{ key_version: number }>(
