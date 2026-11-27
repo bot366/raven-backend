@@ -25,6 +25,9 @@ type Transfer = {
   senderName?: string;
   senderUsername?: string | null;
   senderEmail?: string;
+  recipientName?: string | null;
+  recipientUsername?: string | null;
+  recipientEmail?: string | null;
   encryptionVersion?: number;
   expiresAt?: string | null;
   viewCount?: number;
@@ -428,7 +431,7 @@ function App() {
   const filterTransfers = (items: Transfer[]) => {
     const query = fileSearch.trim().toLowerCase();
     const filtered = items.filter((item) => {
-      const matchesQuery = !query || [item.filename, item.senderName, item.senderUsername, item.senderEmail]
+      const matchesQuery = !query || [item.filename, item.senderName, item.senderUsername, item.senderEmail, item.recipientName, item.recipientUsername, item.recipientEmail]
         .some((value) => value?.toLowerCase().includes(query));
       return matchesQuery && (fileStatus === "all" || item.status === fileStatus);
     });
@@ -584,7 +587,7 @@ function TransferRow({ transfer, kind, onCopy, onRefresh, userId }: { transfer: 
   };
   return <article className={"transfer-row" + (kind === "link" ? " transfer-row-link" : "")}>
     <span className="transfer-file-icon"><Icon name="file"/></span>
-    <div className="transfer-file-meta"><strong>{transfer.filename}</strong><span>{bytes(transfer.filesize)} · {received ? "From " + (transfer.senderUsername ? "@" + transfer.senderUsername : transfer.senderName || transfer.senderEmail || "RAVEN user") : transfer.createdAt ? new Date(transfer.createdAt).toLocaleString() : "Recently"}</span>
+    <div className="transfer-file-meta"><strong>{transfer.filename}</strong><span>{bytes(transfer.filesize)} · {received ? "From " + (transfer.senderUsername ? "@" + transfer.senderUsername : transfer.senderName || transfer.senderEmail || "RAVEN user") : kind !== "link" && (transfer.recipientUsername || transfer.recipientName || transfer.recipientEmail) ? "To " + (transfer.recipientUsername ? "@" + transfer.recipientUsername : transfer.recipientName || transfer.recipientEmail) : transfer.createdAt ? new Date(transfer.createdAt).toLocaleString() : "Recently"}</span>
       {kind === "link" && <small>{transfer.expiresAt ? "Expires " + new Date(transfer.expiresAt).toLocaleString() : "No expiry set"} · {(transfer.viewCount || 0)} opens · {(transfer.downloadCount || 0)} downloads</small>}
     </div>
     <span className={"transfer-type type-" + kind}>{title}</span>
