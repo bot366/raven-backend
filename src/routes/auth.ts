@@ -88,7 +88,7 @@ async function sendVerificationEmail(email: string, displayName: string, token: 
   if (!config.resendApiKey || !config.emailFrom) {
     throw new Error("Email verification is not configured on the server yet.");
   }
-  const verificationUrl = config.frontendBaseUrl + "/?verify=" + encodeURIComponent(token);
+  const verificationUrl = config.frontendBaseUrl + "/#verify=" + encodeURIComponent(token);
   const safeName = escapeHtml(displayName);
   const safeUrl = escapeHtml(verificationUrl);
   const response = await fetch("https://api.resend.com/emails", {
