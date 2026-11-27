@@ -12,7 +12,7 @@ import {SESSION_COOKIE_NAME,getAuthenticatedUser} from "../auth.js";
 
 type ChunkRow = {chunk_index:number;chunk_size:number;sha256:string;storage_path:string};
 type ChunkTransferRow = TransferRow & {chunk_size:number|null;chunk_count:number|null};
-type TransferStatsRow = TransferRow & { view_count?: number | string; download_count?: number | string };
+type TransferStatsRow = TransferRow & { view_count?: number | string; download_count?: number | string; recipient_display_name?: string | null; recipient_username?: string | null; recipient_email?: string | null };
 type ReceivedTransferRow = TransferRow & {
  sender_display_name:string;
  sender_username:string|null;
@@ -27,7 +27,8 @@ function publicTransfer(row:TransferStatsRow){
   downloadUrl:row.status==="completed"?config.publicBaseUrl+"/transfers/"+row.id+"/download":null,
   shareUrl:row.share_token?config.publicBaseUrl+"/share/"+row.share_token:null,
   sha256:row.sha256,
-  viewCount:Number(row.view_count??0),downloadCount:Number(row.download_count??0)
+  viewCount:Number(row.view_count??0),downloadCount:Number(row.download_count??0),
+  recipientName:row.recipient_display_name??null,recipientUsername:row.recipient_username??null,recipientEmail:row.recipient_email??null
  };
 }
 
@@ -346,10 +347,12 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
   const user=await requireUser(request,reply);if(!user)return;
   await query("UPDATE transfers SET status='expired' WHERE user_id=$1 AND expires_at<=NOW() AND status IN ('pending','completed')",[user.id]);
   const r=await query<TransferStatsRow>(
-   `SELECT t.*,
+   `SELECT t.*, recipient.display_name AS recipient_display_name,
+      recipient.username AS recipient_username, recipient.email AS recipient_email,
       (SELECT COUNT(*)::int FROM transfer_events e WHERE e.transfer_id=t.id AND e.event_type='view') AS view_count,
       (SELECT COUNT(*)::int FROM transfer_events e WHERE e.transfer_id=t.id AND e.event_type='download') AS download_count
-    FROM transfers t WHERE t.user_id=$1 ORDER BY t.created_at DESC LIMIT 100`,
+    FROM transfers t LEFT JOIN users recipient ON recipient.id=t.recipient_user_id
+    WHERE t.user_id=$1 ORDER BY t.created_at DESC LIMIT 100`,
    [user.id]
   );
   return {transfers:r.rows.map(publicTransfer)};
