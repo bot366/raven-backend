@@ -20,7 +20,7 @@ export const config={
  databaseUrl:process.env.DATABASE_URL,storageDir:path.resolve(process.env.STORAGE_DIR??"./storage"),
  maxFileSizeBytes:numberFromEnv("MAX_FILE_SIZE_MB",100)*1024*1024,
  expiryHours:numberFromEnv("TRANSFER_EXPIRY_HOURS",24),
- publicBaseUrl:(process.env.PUBLIC_BASE_URL??"http://localhost:3000").replace(/\\/$/,""),
+ publicBaseUrl:(process.env.PUBLIC_BASE_URL??"http://localhost:3000").replace(/\/$/,""),
  corsOrigin:process.env.CORS_ORIGIN??"",
  b2:{...b2Values,enabled:b2Configured}
 };
