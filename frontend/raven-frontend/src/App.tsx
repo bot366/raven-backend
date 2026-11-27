@@ -26,6 +26,9 @@ type Transfer = {
   senderUsername?: string | null;
   senderEmail?: string;
   encryptionVersion?: number;
+  expiresAt?: string | null;
+  viewCount?: number;
+  downloadCount?: number;
 };
 type Page = "overview" | "sent" | "received" | "links" | "settings";
 type Health = "checking" | "online" | "offline";
@@ -261,6 +264,17 @@ function App() {
   const [pageError, setPageError] = useState("");
   const [avatarUrl, setAvatarUrl] = useState("");
   const [usernameSetup, setUsernameSetup] = useState(false);
+  const [fileSearch, setFileSearch] = useState("");
+  const [fileStatus, setFileStatus] = useState("all");
+  const [fileSort, setFileSort] = useState("newest");
+  const [theme, setTheme] = useState<"dark" | "light">(() => {
+    try { return window.localStorage.getItem("raven:theme") === "light" ? "light" : "dark"; }
+    catch { return "dark"; }
+  });
+  const [compact, setCompact] = useState(() => {
+    try { return window.localStorage.getItem("raven:compact") === "true"; }
+    catch { return false; }
+  });
 
   const refreshHealth = useCallback(async () => {
     try {
@@ -311,6 +325,14 @@ function App() {
     }
   }, [user, refreshTransfers]);
   useEffect(() => () => { if (avatarUrl) URL.revokeObjectURL(avatarUrl); }, [avatarUrl]);
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    document.documentElement.dataset.compact = compact ? "true" : "false";
+    try {
+      window.localStorage.setItem("raven:theme", theme);
+      window.localStorage.setItem("raven:compact", String(compact));
+    } catch { /* Preferences remain available for this visit. */ }
+  }, [theme, compact]);
 
   const submitAuth = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -399,8 +421,27 @@ function App() {
   );
 
   const sentCompleted = transfers.filter((item) => item.status === "completed");
-  const sharedLinks = sentCompleted.filter((item) => item.shareUrl);
-  const recent = [...sentCompleted, ...received].sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()).slice(0, 6);
+  const sharedLinks = transfers.filter((item) => Boolean(item.shareUrl));
+  const activeLinks = sharedLinks.filter((item) => item.status === "completed");
+  const pendingTransfers = transfers.filter((item) => item.status === "pending").length;
+  const recent = [...transfers, ...received].sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()).slice(0, 6);
+  const filterTransfers = (items: Transfer[]) => {
+    const query = fileSearch.trim().toLowerCase();
+    const filtered = items.filter((item) => {
+      const matchesQuery = !query || [item.filename, item.senderName, item.senderUsername, item.senderEmail]
+        .some((value) => value?.toLowerCase().includes(query));
+      return matchesQuery && (fileStatus === "all" || item.status === fileStatus);
+    });
+    return filtered.sort((a, b) => {
+      if (fileSort === "largest") return b.filesize - a.filesize;
+      if (fileSort === "smallest") return a.filesize - b.filesize;
+      const delta = new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime();
+      return fileSort === "oldest" ? -delta : delta;
+    });
+  };
+  const displayedSent = filterTransfers(transfers);
+  const displayedReceived = filterTransfers(received);
+  const displayedLinks = filterTransfers(sharedLinks);
   const navItems: { id: Page | "send"; label: string; icon: string }[] = [
     { id: "overview", label: "Overview", icon: "overview" },
     { id: "send", label: "Send files", icon: "send" },
@@ -453,8 +494,8 @@ function App() {
             <section className="stats-grid">
               <StatCard icon="sent" label="Files sent" value={String(sentCompleted.length)} note="Successful uploads"/>
               <StatCard icon="received" label="Files received" value={String(received.length)} note="In your inbox"/>
-              <StatCard icon="links" label="Shared links" value={String(sharedLinks.length)} note="Links you've created"/>
-              <StatCard icon="file" label="Total transfers" value={String(sentCompleted.length + received.length)} note="Sent and received"/>
+              <StatCard icon="links" label="Active links" value={String(activeLinks.length)} note="Public links still available"/>
+              <StatCard icon="file" label="In progress" value={String(pendingTransfers)} note="Pending uploads"/>
             </section>
             <section className="content-card activity-card">
               <div className="section-heading"><div><span className="section-kicker">LATEST UPDATES</span><h2>Recent activity</h2></div><button className="text-button" onClick={() => selectPage("sent")}>View sent files <span>→</span></button></div>
@@ -462,13 +503,13 @@ function App() {
             </section>
           </>}
 
-          {page === "sent" && <section className="content-card full-list-card"><div className="section-heading"><div><span className="section-kicker">YOUR OUTGOING FILES</span><h2>Sent files</h2></div><button className="primary-button compact-button" onClick={openSend}><Icon name="upload"/> Send a file</button></div>{loadingTransfers ? <LoadingLine/> : transfers.length === 0 ? <EmptyState title="Nothing sent yet" text="Files you upload will appear here."/> : <div className="activity-list">{transfers.map((item) => <TransferRow key={item.id} transfer={item} userId={user.id} kind="sent" onCopy={setPageError}/>) }</div>}</section>}
+          {page === "sent" && <section className="content-card full-list-card"><div className="section-heading"><div><span className="section-kicker">YOUR OUTGOING FILES</span><h2>Sent files</h2></div><button className="primary-button compact-button" onClick={openSend}><Icon name="upload"/> Send a file</button></div><TransferToolbar search={fileSearch} onSearch={setFileSearch} status={fileStatus} onStatus={setFileStatus} sort={fileSort} onSort={setFileSort}/>{loadingTransfers ? <LoadingLine/> : transfers.length === 0 ? <EmptyState title="Nothing sent yet" text="Files you upload will appear here."/> : displayedSent.length === 0 ? <EmptyState title="No matching files" text="Try another search or status filter."/> : <div className="activity-list">{displayedSent.map((item) => <TransferRow key={item.id} transfer={item} userId={user.id} kind="sent" onCopy={setPageError} onRefresh={refreshTransfers}/>)}</div>}</section>}
 
-          {page === "received" && <section className="content-card full-list-card"><div className="section-heading"><div><span className="section-kicker">DELIVERED TO YOU</span><h2>Received files</h2></div><span className="count-pill">{received.length} files</span></div>{loadingTransfers ? <LoadingLine/> : received.length === 0 ? <EmptyState title="Your inbox is empty" text="Files sent directly to your RAVEN username or email will appear here."/> : <div className="activity-list">{received.map((item) => <TransferRow key={item.id} transfer={item} userId={user.id} kind="received" onCopy={setPageError}/>) }</div>}</section>}
+          {page === "received" && <section className="content-card full-list-card"><div className="section-heading"><div><span className="section-kicker">DELIVERED TO YOU</span><h2>Received files</h2></div><span className="count-pill">{received.length} files</span></div><TransferToolbar search={fileSearch} onSearch={setFileSearch} status={fileStatus} onStatus={setFileStatus} sort={fileSort} onSort={setFileSort}/>{loadingTransfers ? <LoadingLine/> : received.length === 0 ? <EmptyState title="Your inbox is empty" text="Files sent directly to your RAVEN username or email will appear here."/> : displayedReceived.length === 0 ? <EmptyState title="No matching files" text="Try another search or status filter."/> : <div className="activity-list">{displayedReceived.map((item) => <TransferRow key={item.id} transfer={item} userId={user.id} kind="received" onCopy={setPageError}/>)}</div>}</section>}
 
-          {page === "links" && <section className="content-card full-list-card"><div className="section-heading"><div><span className="section-kicker">LINK SHARING</span><h2>Shared links</h2></div><span className="count-pill">{sharedLinks.length} links</span></div>{sharedLinks.length === 0 ? <EmptyState title="No shared links yet" text="Upload a file without choosing a recipient to create a share link."/> : <div className="activity-list">{sharedLinks.map((item) => <TransferRow key={item.id} transfer={item} userId={user.id} kind="link" onCopy={setPageError}/>) }</div>}</section>}
+          {page === "links" && <section className="content-card full-list-card"><div className="section-heading"><div><span className="section-kicker">LINK SHARING</span><h2>Shared links</h2></div><span className="count-pill">{sharedLinks.length} links</span></div><TransferToolbar search={fileSearch} onSearch={setFileSearch} status={fileStatus} onStatus={setFileStatus} sort={fileSort} onSort={setFileSort}/>{sharedLinks.length === 0 ? <EmptyState title="No shared links yet" text="Upload a file without choosing a recipient to create a share link."/> : displayedLinks.length === 0 ? <EmptyState title="No matching links" text="Try another search or status filter."/> : <div className="activity-list">{displayedLinks.map((item) => <TransferRow key={item.id} transfer={item} userId={user.id} kind="link" onCopy={setPageError} onRefresh={refreshTransfers}/>)}</div>}</section>}
 
-          {page === "settings" && <ProfileSettings user={user} avatarUrl={avatarUrl} setUser={setUser} setAvatarUrl={setAvatarUrl} setError={setPageError}/>}
+          {page === "settings" && <ProfileSettings user={user} avatarUrl={avatarUrl} setUser={setUser} setAvatarUrl={setAvatarUrl} setError={setPageError} theme={theme} setTheme={setTheme} compact={compact} setCompact={setCompact}/>}
           <footer className="workspace-footer"><span>RAVEN / Your files, in one place.</span><span>Secure account workspace</span></footer>
         </main>
       </div>
@@ -485,11 +526,29 @@ function StatCard({ icon, label, value, note }: { icon: string; label: string; v
 function EmptyState({ title, text }: { title: string; text: string }) {
   return <div className="empty-state"><span className="empty-raven"><DeliveryRaven/></span><strong>{title}</strong><span>{text}</span></div>;
 }
+function TransferToolbar({ search, onSearch, status, onStatus, sort, onSort }: {
+  search: string; onSearch: (value: string) => void;
+  status: string; onStatus: (value: string) => void;
+  sort: string; onSort: (value: string) => void;
+}) {
+  return <div className="transfer-toolbar">
+    <label className="toolbar-search"><Icon name="search"/><input value={search} onChange={(event) => onSearch(event.target.value)} placeholder="Search files, senders or recipients"/></label>
+    <select aria-label="Filter by status" value={status} onChange={(event) => onStatus(event.target.value)}>
+      <option value="all">All statuses</option><option value="completed">Completed</option><option value="pending">Pending</option><option value="expired">Expired</option><option value="revoked">Revoked</option><option value="cancelled">Cancelled</option><option value="failed">Failed</option>
+    </select>
+    <select aria-label="Sort files" value={sort} onChange={(event) => onSort(event.target.value)}>
+      <option value="newest">Newest first</option><option value="oldest">Oldest first</option><option value="largest">Largest first</option><option value="smallest">Smallest first</option>
+    </select>
+  </div>;
+}
+
 function LoadingLine() { return <div className="loading-line"><span/> Loading your files…</div>; }
 
-function TransferRow({ transfer, kind, onCopy, userId }: { transfer: Transfer; kind: "sent" | "received" | "link"; onCopy?: (message: string) => void; userId?: string }) {
+function TransferRow({ transfer, kind, onCopy, onRefresh, userId }: { transfer: Transfer; kind: "sent" | "received" | "link"; onCopy?: (message: string) => void; onRefresh?: () => Promise<void>; userId?: string }) {
   const [copied, setCopied] = useState(false);
   const [downloading, setDownloading] = useState(false);
+  const [managing, setManaging] = useState(false);
+  const [expiryChoice, setExpiryChoice] = useState("24");
   const downloadEncrypted = async () => {
     if (!userId || downloading) return;
     setDownloading(true);
@@ -503,21 +562,44 @@ function TransferRow({ transfer, kind, onCopy, userId }: { transfer: Transfer; k
   const shareLink = transfer.encryptionVersion === 1 ? getEncryptedShareLink(transfer.id) : transfer.shareUrl;
   const copy = async () => {
     if (!shareLink) return;
-    try {
-      await navigator.clipboard.writeText(shareLink);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1400);
-    } catch { onCopy?.("Clipboard unavailable. Open the share link and copy it manually."); }
+    try { await navigator.clipboard.writeText(shareLink); setCopied(true); window.setTimeout(() => setCopied(false), 1400); }
+    catch { onCopy?.("Clipboard unavailable. Open the share link and copy it manually."); }
   };
-  return <article className="transfer-row">
+  const updateExpiry = async () => {
+    setManaging(true);
+    try {
+      await api("/transfers/" + encodeURIComponent(transfer.id) + "/expiry", { method: "POST", body: JSON.stringify({ expiryHours: Number(expiryChoice) }) });
+      onCopy?.("Share-link expiry updated."); await onRefresh?.();
+    } catch (error) { onCopy?.(error instanceof Error ? error.message : "Could not update link expiry."); }
+    finally { setManaging(false); }
+  };
+  const revokeLink = async () => {
+    if (!window.confirm("Revoke this share link? Anyone using it will lose access.")) return;
+    setManaging(true);
+    try {
+      await api("/transfers/" + encodeURIComponent(transfer.id) + "/revoke-link", { method: "POST", body: "{}" });
+      onCopy?.("Share link revoked."); await onRefresh?.();
+    } catch (error) { onCopy?.(error instanceof Error ? error.message : "Could not revoke this link."); }
+    finally { setManaging(false); }
+  };
+  return <article className={"transfer-row" + (kind === "link" ? " transfer-row-link" : "")}>
     <span className="transfer-file-icon"><Icon name="file"/></span>
-    <div className="transfer-file-meta"><strong>{transfer.filename}</strong><span>{bytes(transfer.filesize)} · {received ? "From " + (transfer.senderUsername ? "@" + transfer.senderUsername : transfer.senderName || transfer.senderEmail || "RAVEN user") : transfer.createdAt ? new Date(transfer.createdAt).toLocaleString() : "Recently"}</span></div>
+    <div className="transfer-file-meta"><strong>{transfer.filename}</strong><span>{bytes(transfer.filesize)} · {received ? "From " + (transfer.senderUsername ? "@" + transfer.senderUsername : transfer.senderName || transfer.senderEmail || "RAVEN user") : transfer.createdAt ? new Date(transfer.createdAt).toLocaleString() : "Recently"}</span>
+      {kind === "link" && <small>{transfer.expiresAt ? "Expires " + new Date(transfer.expiresAt).toLocaleString() : "No expiry set"} · {(transfer.viewCount || 0)} opens · {(transfer.downloadCount || 0)} downloads</small>}
+    </div>
     <span className={"transfer-type type-" + kind}>{title}</span>
     {transfer.status === "completed" && transfer.encryptionVersion === 1 && userId && <button className="outline-button download-button" type="button" disabled={downloading} onClick={() => void downloadEncrypted()}><Icon name="lock"/>{downloading ? "Decrypting…" : "Decrypt & download"}</button>}
     {received && transfer.status === "completed" && transfer.encryptionVersion !== 1 && <a className="outline-button download-button" href={downloadUrl}><Icon name="download"/> Download</a>}
-    {kind === "link" && shareLink && <button className="outline-button" onClick={() => void copy()}><Icon name="copy"/> {copied ? "Copied" : "Copy link"}</button>}
-    {kind === "link" && transfer.encryptionVersion === 1 && !shareLink && <span className="transfer-type">Link key only available in the send confirmation</span>}
-    {!received && kind !== "link" && shareLink && <button className="quiet-icon-button" title="Copy share link" onClick={() => void copy()}><Icon name="copy"/></button>}
+    {kind === "link" && transfer.status === "completed" && shareLink && <button className="outline-button" onClick={() => void copy()}><Icon name="copy"/> {copied ? "Copied" : "Copy link"}</button>}
+    {kind === "link" && transfer.encryptionVersion === 1 && transfer.status === "completed" && !shareLink && <span className="transfer-type">Link key only available in the send confirmation</span>}
+    {kind === "link" && transfer.status === "completed" && <div className="link-management">
+      <select aria-label="Link expiry" value={expiryChoice} onChange={(event) => setExpiryChoice(event.target.value)} disabled={managing}>
+        <option value="1">1 hour</option><option value="24">1 day</option><option value="72">3 days</option><option value="168">7 days</option><option value="720">30 days</option>
+      </select>
+      <button className="small-text-button" type="button" disabled={managing} onClick={() => void updateExpiry()}>{managing ? "Saving…" : "Update expiry"}</button>
+      <button className="small-text-button danger-text" type="button" disabled={managing} onClick={() => void revokeLink()}>Revoke</button>
+    </div>}
+    {!received && kind !== "link" && shareLink && transfer.status === "completed" && <button className="quiet-icon-button" title="Copy share link" onClick={() => void copy()}><Icon name="copy"/></button>}
     {transfer.status !== "completed" && <span className={"status-tag status-" + transfer.status}>{transfer.status}</span>}
   </article>;
 }
@@ -604,19 +686,79 @@ function EncryptionSettings({ userId }: { userId: string }) {
     {recoveryCode && <div className="settings-block"><div><h3>Save your recovery code</h3><p>This is the only way to restore your private encryption key on another device. Losing it may make encrypted files permanently unreadable.</p></div><div className="username-edit"><textarea className="recovery-code-field" value={recoveryCode} readOnly rows={2}/><button className="outline-button" type="button" onClick={() => void copyCode()}>Copy recovery code</button><button className="primary-button compact-button" type="button" onClick={() => setRecoveryCode("")}>I've saved it</button></div></div>}
     {message && <div className="success-message"><Icon name="check"/>{message}</div>}
     {error && <div className="form-alert" role="alert">{error}</div>}
-    <small className="settings-warning">For now, encryption is available for direct account-to-account transfers only. Public share links and older transfers are not end-to-end encrypted.</small>
+    <small className="settings-warning">New direct transfers and public share links are end-to-end encrypted in this experimental build. Older transfers remain legacy and are not retroactively encrypted.</small>
   </section>;
 }
 
-function ProfileSettings({ user, avatarUrl, setUser, setAvatarUrl, setError }: {
+function AccountSecuritySettings() {
+  const [sessions, setSessions] = useState<{id:string;createdAt:string;expiresAt:string;current:boolean}[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const loadSessions = async () => {
+    setLoading(true);
+    try {
+      const result = await api<{sessions:{id:string;createdAt:string;expiresAt:string;current:boolean}[]}>("/auth/sessions");
+      setSessions(result.sessions);
+    } catch (loadError) { setError(loadError instanceof Error ? loadError.message : "Could not load active sessions."); }
+    finally { setLoading(false); }
+  };
+  useEffect(() => { void loadSessions(); }, []);
+  const revokeOthers = async () => {
+    if (!window.confirm("Sign out all other RAVEN sessions? This browser will stay signed in.")) return;
+    setBusy(true); setError(""); setMessage("");
+    try {
+      const result = await api<{message:string;signedOut:number}>("/auth/sessions/others", { method: "DELETE" });
+      setMessage(result.message); await loadSessions();
+    } catch (revokeError) { setError(revokeError instanceof Error ? revokeError.message : "Could not sign out other sessions."); }
+    finally { setBusy(false); }
+  };
+  const changePassword = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault(); setBusy(true); setError(""); setMessage("");
+    const form = new FormData(event.currentTarget);
+    try {
+      const result = await api<{message:string}>("/auth/password", {
+        method: "PUT",
+        body: JSON.stringify({ currentPassword: String(form.get("currentPassword") || ""), newPassword: String(form.get("newPassword") || "") })
+      });
+      setMessage(result.message); event.currentTarget.reset(); await loadSessions();
+    } catch (passwordError) { setError(passwordError instanceof Error ? passwordError.message : "Could not change password."); }
+    finally { setBusy(false); }
+  };
+  return <section className="settings-card secondary-settings-card">
+    <div className="section-heading"><div><span className="section-kicker">ACCOUNT PROTECTION</span><h2>Password & sessions</h2></div></div>
+    <form className="settings-block password-form" onSubmit={(event) => void changePassword(event)}>
+      <div><h3>Change password</h3><p>Changing your password signs out other active sessions.</p></div>
+      <div className="password-fields"><label className="field-label">Current password<input name="currentPassword" type="password" autoComplete="current-password" minLength={8} maxLength={128} required/></label><label className="field-label">New password<input name="newPassword" type="password" autoComplete="new-password" minLength={8} maxLength={128} required/></label><button className="primary-button compact-button" disabled={busy}>Update password</button></div>
+    </form>
+    <div className="settings-divider"/>
+    <div className="settings-block"><div><h3>Active sessions</h3><p>Review signed-in sessions. The current browser is identified below.</p></div><div className="session-list">{loading ? <LoadingLine/> : sessions.length === 0 ? <small>No active sessions found.</small> : sessions.map((session) => <div className="session-item" key={session.id}><span><strong>{session.current ? "This device" : "Other session"}</strong><small>Signed in {new Date(session.createdAt).toLocaleString()} · Expires {new Date(session.expiresAt).toLocaleString()}</small></span>{session.current && <span className="status-tag status-completed">Current</span>}</div>)}<button className="outline-button" type="button" onClick={() => void revokeOthers()} disabled={busy || loading || sessions.filter((session) => !session.current).length === 0}>{busy ? "Please wait…" : "Sign out other sessions"}</button></div></div>
+    {message && <div className="success-message"><Icon name="check"/>{message}</div>}
+    {error && <div className="form-alert" role="alert">{error}</div>}
+  </section>;
+}
+
+function ProfileSettings({ user, avatarUrl, setUser, setAvatarUrl, setError, theme, setTheme, compact, setCompact }: {
   user: User; avatarUrl: string; setUser: (user: User) => void; setAvatarUrl: (url: string) => void; setError: (error: string) => void;
+  theme: "dark" | "light"; setTheme: (value: "dark" | "light") => void; compact: boolean; setCompact: (value: boolean) => void;
 }) {
   const [username, setUsername] = useState(user.username || "");
+  const [displayName, setDisplayName] = useState(user.displayName);
   const [saving, setSaving] = useState(false);
+  const [displaySaving, setDisplaySaving] = useState(false);
   const [photoBusy, setPhotoBusy] = useState(false);
   const [message, setMessage] = useState("");
   const avatarInput = useRef<HTMLInputElement>(null);
   useEffect(() => setUsername(user.username || ""), [user.username]);
+  const saveDisplayName = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault(); setDisplaySaving(true); setMessage(""); setError("");
+    try {
+      const result = await api<{ user: User }>("/profile/display-name", { method: "PUT", body: JSON.stringify({ displayName }) });
+      setUser(result.user); setDisplayName(result.user.displayName); setMessage("Display name updated.");
+    } catch (error) { setError(error instanceof Error ? error.message : "Could not update display name."); }
+    finally { setDisplaySaving(false); }
+  };
   const saveUsername = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault(); setSaving(true); setMessage(""); setError("");
     try {
@@ -644,13 +786,17 @@ function ProfileSettings({ user, avatarUrl, setUser, setAvatarUrl, setError }: {
   };
   return <section className="content-card settings-card"><div className="section-heading"><div><span className="section-kicker">YOUR ACCOUNT</span><h2>Profile settings</h2></div></div>
     <div className="profile-summary"><Avatar user={user} imageUrl={avatarUrl} size="large"/><div><strong>{user.displayName}</strong><span>@{user.username}</span><small>{user.email}</small></div></div>
+    <form className="settings-block username-settings" onSubmit={(event) => void saveDisplayName(event)}><div><h3>Display name</h3><p>This name is shown to people receiving files from you.</p></div><div className="username-edit"><label className="field-label">Your name<input value={displayName} onChange={(event) => setDisplayName(event.target.value)} minLength={2} maxLength={60} required/></label><button className="primary-button compact-button" disabled={displaySaving || displayName.trim() === user.displayName}>{displaySaving ? "Saving…" : "Save name"}</button></div></form>
     <EncryptionSettings userId={user.id}/>
+    <AccountSecuritySettings/>
+    <div className="settings-divider"/>
+    <div className="settings-block"><div><h3>Appearance</h3><p>Choose how RAVEN looks on this device.</p></div><div className="appearance-controls"><label>Theme<select value={theme} onChange={(event) => setTheme(event.target.value as "dark" | "light")}><option value="dark">Dark</option><option value="light">Light</option></select></label><label className="toggle-setting"><input type="checkbox" checked={compact} onChange={(event) => setCompact(event.target.checked)}/> Compact file lists</label></div></div>
     <div className="settings-divider"/>
     <div className="settings-block"><div><h3>Profile picture</h3><p>Your initials are used by default. Add a picture whenever you're ready.</p></div><div className="photo-actions"><button className="outline-button" onClick={() => avatarInput.current?.click()} disabled={photoBusy}>{photoBusy ? "Uploading…" : "Change photo"}</button><input ref={avatarInput} className="visually-hidden" type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={(event) => void uploadAvatar(event)}/><small>JPG, PNG, WebP or GIF · Max 2 MB</small></div></div>
     <div className="settings-divider"/>
     <form className="settings-block username-settings" onSubmit={(event) => void saveUsername(event)}><div><h3>Username</h3><p>This is how other people can find you when sending files.</p></div><div className="username-edit"><label className="field-label">Your username<input value={username} onChange={(event) => setUsername(event.target.value)} minLength={3} maxLength={20} pattern="[A-Za-z0-9_]{3,20}" required/></label><button className="primary-button compact-button" disabled={saving || username === user.username}>{saving ? "Saving…" : "Save username"}</button></div></form>
     <div className="settings-divider"/>
-    <div className="settings-block"><div><h3>Email address</h3><p>Your email can also be used to receive files.</p></div><strong className="settings-email">{user.email}</strong></div>
+    <div className="settings-block"><div><h3>Email address</h3><p>Your email can also be used to receive files. Email changes will be enabled with email verification.</p></div><strong className="settings-email">{user.email}</strong></div>
     {message && <div className="success-message"><Icon name="check"/>{message}</div>}
   </section>;
 }
