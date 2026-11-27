@@ -38,7 +38,7 @@ The implementation validates metadata shape, expected chunk count, file sizes an
 
 ### Key envelopes
 
-HPKE Auth mode is used with DHKEM(P-256, HKDF-SHA256), HKDF-SHA256 and AES-256-GCM. The sender and recipient each receive a separate envelope containing the transfer DEK. HPKE context info binds the envelope to:
+HPKE Auth mode is used with DHKEM(P-256, HKDF-SHA256), HKDF-SHA256 and AES-256-GCM. For direct transfers, the sender and recipient each receive a separate envelope containing the transfer DEK. For public share links, the sender receives an envelope and the random DEK is carried only in the URL fragment for the holder of the complete link. HPKE context info binds the envelope to:
 - the transfer ID,
 - sender account ID,
 - recipient account ID,
@@ -77,7 +77,7 @@ This is out-of-band verification with local pinning, not a key-transparency serv
 - Server validates canonical base64 encoding, key sizes, transfer participants and current key versions.
 - Envelope storage occurs only while the transfer is pending and is transactionally tied to a successful pending-transfer update.
 - Encrypted transfers reject the legacy single-request plaintext upload endpoint.
-- Transfer completion requires encrypted metadata and both participant key envelopes.
+- Transfer completion requires encrypted metadata and exactly one envelope per participant (one sender envelope for public links, two envelopes for direct transfers).
 - Legacy transfers remain encryption version 0 and are not retroactively relabelled encrypted.
 
 ## 5. Compatibility and exclusions
@@ -101,8 +101,10 @@ The CI suite currently covers:
 - AES-GCM metadata/chunk round trip.
 - Public-share sender-only envelope and fragment-key decryption round trip.
 - Rejection of altered ciphertext and metadata nonce.
+- Incremental response decryption with arbitrary network chunk boundaries, plus rejection of truncated and trailing data.
+- Backend envelope validation for public-share and direct-transfer participant sets, including malformed, duplicate, and unknown-user envelopes.
 
-These tests are important regression checks, not a full security audit or complete browser/backend integration suite.
+GitHub Actions runs the backend envelope-validation suite and build, plus the frontend crypto/stream tests and TypeScript/Vite build. These tests are important regression checks, not a full security audit or complete browser/backend integration suite.
 
 ## 7. Remaining security work before production
 
@@ -111,7 +113,7 @@ These tests are important regression checks, not a full security audit or comple
 3. Key transparency or a stronger authenticated contact directory.
 4. Browser integration tests across supported browsers and devices, including shared links opened in a separate browser.
 5. Replay/authorization testing and large-file memory/performance testing.
-8. Review frontend delivery integrity and XSS/content security controls.
+6. Review frontend delivery integrity and XSS/content security controls.
 
 The implementation remains experimental. Test only with disposable, non-sensitive files until all remaining work and an independent review are complete.
 
