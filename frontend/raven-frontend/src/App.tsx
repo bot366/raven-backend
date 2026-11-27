@@ -34,8 +34,35 @@ type DeliveryState = "idle" | "preparing" | "flying" | "success" | "error";
 const API = (import.meta.env.VITE_API_URL || "https://raven-backend-qg3w.onrender.com").replace(/\/$/, "");
 const MAX_MB = Number(import.meta.env.VITE_MAX_FILE_SIZE_MB || 100);
 
-// Share-link secrets remain in this tab's memory only. The server never stores the fragment key.
+// Share-link secrets are confined to the current tab session. The server never stores the fragment key.
 const encryptedShareLinks = new Map<string, string>();
+const SHARE_SESSION_PREFIX = "raven:e2ee:share:";
+
+function rememberEncryptedShareLink(transferId: string, shareLink: string): void {
+  encryptedShareLinks.set(transferId, shareLink);
+  try { window.sessionStorage.setItem(SHARE_SESSION_PREFIX + transferId, shareLink); }
+  catch { /* The send confirmation still exposes the link if session storage is unavailable. */ }
+}
+
+function getEncryptedShareLink(transferId: string): string | null {
+  const inMemory = encryptedShareLinks.get(transferId);
+  if (inMemory) return inMemory;
+  try {
+    const stored = window.sessionStorage.getItem(SHARE_SESSION_PREFIX + transferId);
+    if (stored) encryptedShareLinks.set(transferId, stored);
+    return stored;
+  } catch { return null; }
+}
+
+function clearEncryptedShareLinks(): void {
+  encryptedShareLinks.clear();
+  try {
+    for (let index = window.sessionStorage.length - 1; index >= 0; index--) {
+      const key = window.sessionStorage.key(index);
+      if (key?.startsWith(SHARE_SESSION_PREFIX)) window.sessionStorage.removeItem(key);
+    }
+  } catch { /* Storage may be disabled by the browser. */ }
+}
 
 async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers = new Headers(options.headers);
@@ -346,7 +373,7 @@ function App() {
   };
   const logout = async () => {
     if (user) clearCachedEncryptionIdentity(user.id);
-    encryptedShareLinks.clear();
+    clearEncryptedShareLinks();
     try { await api("/auth/logout", { method: "POST", body: "{}" }); }
     finally {
       setUser(null); setPage("overview"); setSendOpen(false); setMenuOpen(false);
@@ -510,7 +537,7 @@ function TransferRow({ transfer, kind, onCopy, userId }: { transfer: Transfer; k
   const received = kind === "received";
   const title = kind === "link" ? "Share link" : received ? "Received file" : "Sent file";
   const downloadUrl = API + "/transfers/" + encodeURIComponent(transfer.id) + "/download";
-  const shareLink = transfer.encryptionVersion === 1 ? encryptedShareLinks.get(transfer.id) : transfer.shareUrl;
+  const shareLink = transfer.encryptionVersion === 1 ? getEncryptedShareLink(transfer.id) : transfer.shareUrl;
   const copy = async () => {
     if (!shareLink) return;
     try {
@@ -883,7 +910,7 @@ function SendModal({ userId, onClose, onComplete }: { userId: string; onClose: (
         const shareTokenFromApi = new URL(completion.shareUrl).pathname.split("/").filter(Boolean).pop();
         if (!shareTokenFromApi) throw new Error("The server completed the encrypted upload but did not return a valid share token.");
         completedShareLink = window.location.origin + "/?share=" + encodeURIComponent(shareTokenFromApi) + "#key=" + encodeURIComponent(session.shareKey);
-        encryptedShareLinks.set(activeId, completedShareLink);
+        rememberEncryptedShareLink(activeId, completedShareLink);
       }
       setShareUrl(completedShareLink);
       setProgress(100); setDelivery("success"); setSelected(null); setTransferId(null);
