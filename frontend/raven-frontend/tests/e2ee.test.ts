@@ -8,6 +8,7 @@ import {
   encryptTransferChunk,
   decryptTransferMetadata,
   decryptTransferChunk,
+  decryptTransferStreamToBlob,
   unwrapTransferKey,
   encodeBase64,
   getKeyFingerprint,
@@ -227,5 +228,65 @@ test("RAVEN public encrypted share links use a fragment-only file key", async ()
       session.encryptedMetadata,
       encodeBase64(session.metadataNonce),
     ),
+  );
+});
+
+
+test("RAVEN decrypts response streams split across arbitrary network boundaries", async () => {
+  const senderCreated = await createEncryptionIdentity();
+  const sender = await unlockEncryptionIdentity("stream-test-sender", {
+    user_id: "stream-test-sender",
+    key_version: 1,
+    public_key: senderCreated.payload.publicKey,
+    encrypted_private_key: senderCreated.payload.encryptedPrivateKey,
+    recovery_salt: senderCreated.payload.recoverySalt,
+    recovery_nonce: senderCreated.payload.recoveryNonce,
+    algorithm: "HPKE-P256-HKDFSHA256-AES256GCM",
+  }, senderCreated.recoveryCode);
+
+  const message = "Stream boundaries must not affect authenticated chunk decryption.";
+  const bytes = new TextEncoder().encode(message);
+  const file = new File([bytes], "stream.txt", { type: "text/plain" });
+  const transferId = "stream-boundary-test";
+  const session = await createTransferEncryptionSession(
+    file, transferId, "stream-test-sender", sender.pair, sender.keyVersion, null, null, null,
+  );
+  const metadata = await decryptTransferMetadata(
+    session.fileKey, transferId, session.encryptedMetadata, encodeBase64(session.metadataNonce),
+  );
+  const encrypted = await encryptTransferChunk(session, transferId, 0, file);
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (let offset = 0; offset < encrypted.length; offset += 3) {
+        controller.enqueue(encrypted.slice(offset, offset + 3));
+      }
+      controller.close();
+    },
+  });
+  const decrypted = await decryptTransferStreamToBlob(session.fileKey, transferId, metadata, stream);
+  assert.equal(await decrypted.text(), message);
+  assert.equal(decrypted.type, "text/plain");
+
+  const truncated = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(encrypted.slice(0, encrypted.length - 1));
+      controller.close();
+    },
+  });
+  await assert.rejects(
+    () => decryptTransferStreamToBlob(session.fileKey, transferId, metadata, truncated),
+    /ended before all chunks/i,
+  );
+
+  const trailing = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(encrypted);
+      controller.enqueue(new Uint8Array([1]));
+      controller.close();
+    },
+  });
+  await assert.rejects(
+    () => decryptTransferStreamToBlob(session.fileKey, transferId, metadata, trailing),
+    /trailing data/i,
   );
 });
