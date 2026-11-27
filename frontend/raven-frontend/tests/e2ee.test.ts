@@ -12,6 +12,7 @@ import {
   encodeBase64,
   getKeyFingerprint,
   fingerprintsMatch,
+  importShareFileKey,
   verifyAndPinPeerKey,
   type StoredEncryptionKey,
 } from "../src/e2ee.ts";
@@ -169,3 +170,66 @@ test("RAVEN E2EE identity recovery, HPKE key envelopes and AES-GCM file chunks r
     ),
   );
 });
+
+
+test("RAVEN public encrypted share links use a fragment-only file key", async () => {
+  const senderCreated = await createEncryptionIdentity();
+  const sender = await unlockEncryptionIdentity("public-share-sender", {
+    user_id: "public-share-sender",
+    key_version: 1,
+    public_key: senderCreated.payload.publicKey,
+    encrypted_private_key: senderCreated.payload.encryptedPrivateKey,
+    recovery_salt: senderCreated.payload.recoverySalt,
+    recovery_nonce: senderCreated.payload.recoveryNonce,
+    algorithm: "HPKE-P256-HKDFSHA256-AES256GCM",
+  }, senderCreated.recoveryCode);
+
+  const originalText = "Public link content stays encrypted on the server.";
+  const file = new File([new TextEncoder().encode(originalText)], "public-share.txt", { type: "text/plain" });
+  const transferId = "e2ee-public-share-test";
+  const session = await createTransferEncryptionSession(
+    file,
+    transferId,
+    "public-share-sender",
+    sender.pair,
+    sender.keyVersion,
+    null,
+    null,
+    null,
+  );
+
+  assert.equal(session.envelopes.length, 1);
+  assert.equal(session.envelopes[0].userId, "public-share-sender");
+  assert.equal(session.shareKey.length, 44);
+
+  const linkFileKey = await importShareFileKey(session.shareKey);
+  const metadata = await decryptTransferMetadata(
+    linkFileKey, transferId, session.encryptedMetadata, encodeBase64(session.metadataNonce),
+  );
+  assert.equal(metadata.filename, "public-share.txt");
+  assert.equal(metadata.originalSize, new TextEncoder().encode(originalText).length);
+
+  const ciphertext = await encryptTransferChunk(session, transferId, 0, file);
+  const ciphertextBuffer = ciphertext.buffer.slice(
+    ciphertext.byteOffset,
+    ciphertext.byteOffset + ciphertext.byteLength,
+  ) as ArrayBuffer;
+  const plaintext = await decryptTransferChunk(
+    linkFileKey, transferId, 0, metadata.chunkCount, metadata.noncePrefix, ciphertextBuffer,
+  );
+  assert.equal(new TextDecoder().decode(plaintext), originalText);
+
+  await assert.rejects(
+    () => decryptTransferMetadata(
+      awaitInvalidShareKey(session.shareKey),
+      transferId,
+      session.encryptedMetadata,
+      encodeBase64(session.metadataNonce),
+    ),
+  );
+});
+
+async function awaitInvalidShareKey(_value: string): Promise<CryptoKey> {
+  const bad = encodeBase64(new Uint8Array(32).fill(7));
+  return importShareFileKey(bad);
+}
