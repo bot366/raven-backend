@@ -7,7 +7,7 @@ RAVEN is a React + TypeScript file-sharing application backed by Fastify, Neon P
 - API: Fastify web service on Render
 - Database: Neon PostgreSQL
 - Authentication: Argon2id password hashes and opaque server-side sessions in Secure, HttpOnly cookies
-- Transfers: authenticated account-to-account transfers, legacy public share links, and a first end-to-end encrypted direct-transfer path.
+- Transfers: authenticated account-to-account transfers, legacy public share links, and experimental end-to-end encrypted direct transfers and public share links.
 - Profiles: unique usernames, username/email recipient lookup, generated initials avatars, and optional profile photos.
 - Dashboard: responsive overview, sent/received files, shared links, profile settings, and a small animated 2D raven during uploads.
 
@@ -22,7 +22,7 @@ RAVEN is a React + TypeScript file-sharing application backed by Fastify, Neon P
   - `MAX_FILE_SIZE_MB`: upload limit (default 100)
   - `TRANSFER_EXPIRY_HOURS`: transfer lifetime (default 24)
   - `STORAGE_DIR`: local storage directory (temporary only on ephemeral hosting)
-- Run `npm run db:migrate` once after deploying the new API code and before enabling the new frontend. If the Render service has no Shell, run the SQL shown in the `Database update` section using the Neon SQL Editor.
+- For the existing production release, run the migration only when deploying its matching API/frontend versions. The additional E2EE schema on `raven-e2ee-design` is experimental: do not apply it to production Neon or deploy this branch until the security review and browser integration work are complete.
 
 ## Database update
 
@@ -125,7 +125,7 @@ Never commit `.env`, database credentials, API keys, session cookies, or uploade
 
 The E2EE path in this branch supports new direct account-to-account transfers and encrypted public share links. The browser encrypts each file chunk with AES-256-GCM before upload. Chunk nonces are unique within the transfer and the transfer ID, chunk index, and chunk count are authenticated as additional data. The filename, MIME type, plaintext size, chunk layout, and nonce prefix are encrypted as transfer metadata. Each file receives a random data-encryption key.
 
-That data key is wrapped separately for the sender and recipient using HPKE Auth mode with DHKEM(P-256), HKDF-SHA256, and AES-256-GCM. HPKE context info binds each envelope to the transfer ID, sender account ID, recipient account ID, and envelope purpose. The server stores ciphertext, encrypted metadata, and the two key envelopes. It does not receive the file key or plaintext private key. Server-side SHA-256 checks validate ciphertext integrity; AES-GCM authentication detects unauthorized changes during decryption.
+That data key is wrapped separately for the sender and recipient using HPKE Auth mode with DHKEM(P-256), HKDF-SHA256, and AES-256-GCM. HPKE context info binds each envelope to the transfer ID, sender account ID, recipient account ID, and envelope purpose. For direct transfers, the server stores ciphertext, encrypted metadata, and separate sender/recipient key envelopes. For public encrypted links, it stores only the sender envelope; the share key is placed in the URL fragment and is not sent in HTTP requests. It does not receive the file key or plaintext private key. Server-side SHA-256 checks validate ciphertext integrity; AES-GCM authentication detects unauthorized changes during decryption.
 
 Each account creates an encryption identity in Settings. The private key is encrypted locally with a random 256-bit recovery code before its encrypted PKCS#8 backup is uploaded. Once created or recovered, the private key is imported as a non-exportable WebCrypto key and checked against the public key before it is cached in memory. The recovery code is shown once and must be saved by the user. RAVEN cannot restore a lost private key without that code. The private key remains in browser memory for the current tab and is cleared on logout; after a page reload, the user must unlock it again with the recovery code.
 
@@ -140,4 +140,4 @@ Important limitations for this experimental implementation:
 - A compromised frontend build, browser extension, malware, or compromised endpoint can expose plaintext while the user opens or sends a file. Non-exportable keys reduce direct key export but do not stop malicious JavaScript from asking the browser to perform cryptographic operations while the page is compromised.
 - This is an experimental controlled-testing implementation, not an audited secure file-sharing product. Test only with disposable, non-sensitive files and obtain an independent security review before handling private data.
 
-Encrypted downloads decrypt the response incrementally, one authenticated chunk at a time. The browser assembles verified plaintext chunks into a download Blob; very large files can still use substantial memory. The recipient and sender can decrypt a completed encrypted transfer from their respective transfer lists using their unlocked account encryption identity. The browser decrypts the ciphertext locally, checks AES-GCM authentication for every chunk, and triggers the download only after the full stream passes its length and integrity checks.
+The backend validates exactly one sender envelope for public links or one envelope per participant for direct transfers. Encrypted downloads decrypt the response incrementally, one authenticated chunk at a time. The browser assembles verified plaintext chunks into a download Blob; very large files can still use substantial memory. The recipient and sender can decrypt a completed encrypted transfer from their respective transfer lists using their unlocked account encryption identity. The browser decrypts the ciphertext locally, checks AES-GCM authentication for every chunk, and triggers the download only after the full stream passes its length and integrity checks.
