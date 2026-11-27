@@ -44,6 +44,7 @@ export type TransferEncryptionSession = {
   metadataNonce: Uint8Array;
   encryptedMetadata: string;
   envelopes: KeyEnvelope[];
+  shareKey: string;
   chunkCount: number;
   cipherSize: number;
   plaintextChunkSize: number;
@@ -67,6 +68,19 @@ function fromBase64(value: string): Uint8Array {
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
   return bytes;
+}
+
+export async function importShareFileKey(value: string): Promise<CryptoKey> {
+  const raw = fromBase64(value);
+  if (raw.length !== 32 || encodeBase64(raw) !== value) {
+    raw.fill(0);
+    throw new Error("This encrypted share link has an invalid decryption key.");
+  }
+  try {
+    return await crypto.subtle.importKey("raw", toArrayBuffer(raw), "AES-GCM", false, ["decrypt"]);
+  } finally {
+    raw.fill(0);
+  }
 }
 function toArrayBuffer(value: Uint8Array): ArrayBuffer {
   return value.slice().buffer;
@@ -266,15 +280,32 @@ export async function createTransferEncryptionSession(
   senderId: string,
   senderPair: CryptoKeyPair,
   senderKeyVersion: number,
-  recipientId: string,
-  recipientPublicKeyRaw: string,
-  recipientKeyVersion: number,
+  recipientId: string | null,
+  recipientPublicKeyRaw: string | null,
+  recipientKeyVersion: number | null,
 ): Promise<TransferEncryptionSession> {
+  if ((recipientId === null) !== (recipientPublicKeyRaw === null) ||
+      (recipientId === null) !== (recipientKeyVersion === null)) {
+    throw new Error("Recipient encryption details are incomplete.");
+  }
   const fileKeyRaw = randomBytes(32);
   const fileKey = await crypto.subtle.importKey("raw", toArrayBuffer(fileKeyRaw), "AES-GCM", false, ["encrypt", "decrypt"]);
-  const recipientPublicKey = await suite.kem.deserializePublicKey(toArrayBuffer(fromBase64(recipientPublicKeyRaw)));
-  const senderEnvelope = await wrapFileKey(fileKeyRaw, senderPair.publicKey, senderPair, senderId, senderId, senderKeyVersion, transferId, "sender");
-  const recipientEnvelope = await wrapFileKey(fileKeyRaw, recipientPublicKey, senderPair, senderId, recipientId, recipientKeyVersion, transferId, "recipient");
+  const envelopes: KeyEnvelope[] = [
+    await wrapFileKey(fileKeyRaw, senderPair.publicKey, senderPair, senderId, senderId, senderKeyVersion, transferId, "sender"),
+  ];
+  if (recipientId !== null && recipientPublicKeyRaw !== null && recipientKeyVersion !== null) {
+    if (!Number.isSafeInteger(recipientKeyVersion) || recipientKeyVersion < 1) {
+      fileKeyRaw.fill(0);
+      throw new Error("The recipient encryption key version is invalid.");
+    }
+    const recipientPublicKey = await suite.kem.deserializePublicKey(toArrayBuffer(fromBase64(recipientPublicKeyRaw)));
+    envelopes.push(await wrapFileKey(
+      fileKeyRaw, recipientPublicKey, senderPair, senderId, recipientId, recipientKeyVersion, transferId, "recipient"
+    ));
+  }
+  // The raw DEK is also used as the secret in a public share-link URL fragment.
+  // URL fragments are not included in HTTP requests; the server receives only ciphertext.
+  const shareKey = encodeBase64(fileKeyRaw);
   fileKeyRaw.fill(0);
   const plaintextChunkSize = CHUNK_PLAINTEXT_SIZE;
   const chunkCount = Math.max(1, Math.ceil(file.size / plaintextChunkSize));
@@ -304,7 +335,8 @@ export async function createTransferEncryptionSession(
     noncePrefix,
     metadataNonce,
     encryptedMetadata: encodeBase64(encryptedMetadata),
-    envelopes: [senderEnvelope, recipientEnvelope],
+    envelopes,
+    shareKey,
     chunkCount,
     cipherSize: file.size + chunkCount * 16,
     plaintextChunkSize,
