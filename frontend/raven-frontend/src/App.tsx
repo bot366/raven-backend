@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ChangeEvent, type DragEvent, type FormEvent } from "react";
 import {
   cacheEncryptionIdentity, clearCachedEncryptionIdentity, createEncryptionIdentity, createTransferEncryptionSession,
-  decryptTransferChunk, decryptTransferMetadata, decryptTransferStreamToBlob, encodeBase64, getCachedEncryptionIdentity, importShareFileKey,
+  decryptTransferMetadata, decryptTransferStreamToBlob, encodeBase64, getCachedEncryptionIdentity, importShareFileKey,
   encryptTransferChunk, getKeyFingerprint, unlockEncryptionIdentity, unwrapTransferKey,
   verifyAndPinPeerKey,
   type StoredEncryptionKey, type TransferEncryptionSession
