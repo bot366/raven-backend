@@ -47,6 +47,7 @@ export async function encryptionRoutes(app: FastifyInstance): Promise<void> {
        FROM user_encryption_keys WHERE user_id=$1`,
       [user.id]
     );
+    reply.header("Cache-Control", "no-store, private");
     return { key: result.rows[0] ?? null };
   });
 
@@ -83,6 +84,7 @@ export async function encryptionRoutes(app: FastifyInstance): Promise<void> {
       [request.params.userId]
     );
     if (!result.rows[0]) return reply.code(404).send({ error: "This account has not set up encryption yet." });
+    reply.header("Cache-Control", "no-store, private");
     return { key: result.rows[0] };
   });
 
