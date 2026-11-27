@@ -123,6 +123,61 @@ The backend migration script contains the same changes and is safe to rerun.
 
 The frontend sends 8 MiB chunks with up to three concurrent requests. Each chunk includes a SHA-256 digest in the `X-Chunk-Sha256` header; the backend verifies the digest and exact expected byte length before accepting it. Repeated identical chunk submissions are idempotent. Completion rechecks each stored chunk, assembles chunks in order, calculates a final SHA-256 digest, and only then marks the transfer complete. A failed upload can be retried in the same browser session and already-received chunks are skipped. The chunk manifest is stored in Neon, but chunk bytes are stored in the backend's local filesystem, so resuming after a Render restart is not guaranteed.
 
+## Email verification
+
+RAVEN can require email ownership verification before account holders can send or receive files.
+
+### Backend environment variables
+
+Set these on the **Render backend service only**:
+
+- `RESEND_API_KEY`: a Resend API key with sending permission. Do not add this to the frontend or a `VITE_` variable.
+- `EMAIL_FROM`: a sender address on a domain verified for sending in Resend, for example `RAVEN <verify@yourdomain.com>`.
+- `FRONTEND_BASE_URL`: the deployed RAVEN frontend origin, used to construct the verification link.
+
+Keep `CORS_ORIGIN` set to the exact frontend origin as before. `FRONTEND_BASE_URL` should be that same deployed frontend URL unless the verification page is hosted elsewhere.
+
+### Resend setup
+
+1. Create a Resend account and add a domain you control under **Domains**.
+2. Copy the DNS records Resend displays into the DNS provider that manages that domain. Add the DKIM and SPF records exactly as provided; do not guess the record names or values.
+3. Wait for Resend to show the domain as verified for sending. DMARC is recommended for deliverability.
+4. Create a sending-only API key and add it to Render as `RESEND_API_KEY`.
+5. Set `EMAIL_FROM` to an address at that verified domain, and set `FRONTEND_BASE_URL` to the deployed frontend origin.
+6. Redeploy the backend after saving the environment variables.
+
+### Database
+
+The migration adds `users.email_verified` (existing rows default to `FALSE`) and a one-time verification-token table. Run the updated `npm run db:migrate` against the matching Neon database, or execute this SQL in the Neon SQL Editor:
+
+```sql
+ALTER TABLE public.users
+  ADD COLUMN IF NOT EXISTS email_verified BOOLEAN NOT NULL DEFAULT FALSE;
+
+CREATE TABLE IF NOT EXISTS public.email_verification_tokens (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL UNIQUE,
+  expires_at TIMESTAMPTZ NOT NULL,
+  used_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS email_verification_tokens_user_created_idx
+  ON public.email_verification_tokens(user_id, created_at DESC);
+```
+
+### Behaviour
+
+- New accounts are created unverified and receive a link valid for 30 minutes.
+- The link contains a random token in the URL fragment; the frontend sends it to the API only after the user clicks **Verify email address**.
+- The database stores only a SHA-256 hash of the token. A token can be used once.
+- Users may sign in while unverified, but transfer APIs and public share downloads are blocked until verification.
+- A signed-in unverified user can request another email (one-minute cooldown) or correct the address after confirming their password.
+- Existing accounts become unverified when this migration is first applied. They must verify the email currently on their account before using transfers.
+
+**Important:** apply the migration to the intended Neon database before deploying the corresponding backend. No migration should be run against production until this feature branch is approved.
+
 ## Security and storage notes
 The API requires exact CORS origins and uses credentialed requests with Secure, HttpOnly, SameSite=None session cookies. The browser includes credentials with frontend API calls. State-changing browser requests are checked against the allowed Origin list. Do not use wildcard CORS.
 
