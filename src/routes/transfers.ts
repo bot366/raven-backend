@@ -235,6 +235,7 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
   if(transfer.status!=="pending")return reply.code(409).send({error:"This transfer is no longer pending."});
   if(!transfer.chunk_size||!transfer.chunk_count)return reply.code(409).send({error:"Initialize the chunked upload first."});
   if(transfer.encryption_version===1){
+   const requiredEnvelopes=transfer.recipient_user_id?2:1;
    const protection=await query<{encrypted_metadata:string|null;metadata_nonce:string|null;envelope_count:string}>(
     `SELECT t.encrypted_metadata,t.metadata_nonce,COUNT(e.user_id)::text AS envelope_count
      FROM transfers t LEFT JOIN transfer_key_envelopes e ON e.transfer_id=t.id
@@ -242,8 +243,8 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
     [transfer.id]
    );
    const row=protection.rows[0];
-   if(!row?.encrypted_metadata||!row.metadata_nonce||Number(row.envelope_count)!==2){
-    return reply.code(409).send({error:"Encrypted metadata and both participant key envelopes must be saved before completion."});
+   if(!row?.encrypted_metadata||!row.metadata_nonce||Number(row.envelope_count)!==requiredEnvelopes){
+    return reply.code(409).send({error:"Encrypted metadata and all required participant key envelopes must be saved before completion."});
    }
   }
   const parts=await query<ChunkRow>(
@@ -390,7 +391,6 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
   if(!filename||filename.length>255)return reply.code(400).send({error:"A filename between 1 and 255 characters is required."});
   if(!Number.isSafeInteger(filesize)||filesize<0||filesize>config.maxFileSizeBytes)return reply.code(400).send({error:"Invalid file size."});
   if(encryptionVersion!==0&&encryptionVersion!==1)return reply.code(400).send({error:"Unsupported encryption format."});
-  if(encryptionVersion===1&&!recipientIdentifier)return reply.code(400).send({error:"End-to-end encrypted transfers require a RAVEN recipient account."});
   if(encryptionVersion===1&&filename!=="Encrypted file")return reply.code(400).send({error:"Encrypted transfers must not send plaintext filenames to the server."});
 
   let recipientId:string|null=null;
@@ -411,11 +411,12 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
 
   const expires=new Date(Date.now()+config.expiryHours*3600000);
   if(encryptionVersion===1){
+   const requiredUsers=recipientId?[user.id,recipientId]:[user.id];
    const keyCheck=await query(
     "SELECT COUNT(*)::int AS count FROM user_encryption_keys WHERE user_id=ANY($1::uuid[])",
-    [[user.id,recipientId]]
+    [requiredUsers]
    );
-   if(Number(keyCheck.rows[0]?.count)!==2)return reply.code(409).send({error:"Both accounts must set up end-to-end encryption before sending files."});
+   if(Number(keyCheck.rows[0]?.count)!==requiredUsers.length)return reply.code(409).send({error:"The sending account (and recipient account, for direct transfers) must set up end-to-end encryption first."});
   }
   const r=await query<TransferRow>(
    "INSERT INTO transfers(user_id,recipient_user_id,filename,filesize,status,expires_at,encryption_version) VALUES($1,$2,$3,$4,'pending',$5,$6) RETURNING *",
@@ -481,10 +482,20 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
   return sendFile(reply,row);
  });
 
+ app.get<{Params:{token:string}}>("/share/:token/download",async(request,reply)=>{
+  const r=await query<TransferRow>("SELECT * FROM transfers WHERE share_token=$1",[request.params.token]);
+  const row=r.rows[0];
+  if(!row)return reply.code(404).send({error:"Share link not found."});
+  return sendFile(reply,row);
+ });
+
+ // Legacy links keep their original download behavior. Encrypted links are downloaded
+ // by the frontend client after reading the key from the URL fragment.
  app.get<{Params:{token:string}}>("/share/:token",async(request,reply)=>{
   const r=await query<TransferRow>("SELECT * FROM transfers WHERE share_token=$1",[request.params.token]);
   const row=r.rows[0];
   if(!row)return reply.code(404).send({error:"Share link not found."});
+  if(row.encryption_version===1)return reply.code(409).send({error:"This is an encrypted share. Open it in the RAVEN web app to decrypt it locally."});
   return sendFile(reply,row);
  });
 }
