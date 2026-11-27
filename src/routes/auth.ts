@@ -8,6 +8,7 @@ import { pipeline } from "node:stream/promises";
 import { query } from "../db.js";
 import { config } from "../config.js";
 import { SESSION_COOKIE_NAME, hashSessionToken, getAuthenticatedUser } from "../auth.js";
+import { b2StorageEnabled, deleteObject, getObjectStream, isB2ObjectPath, makeObjectKey, uploadObject } from "../storage.js";
 
 const SESSION_SECONDS = 7 * 24 * 60 * 60;
 const AVATAR_MAX_BYTES = 2 * 1024 * 1024;
@@ -215,12 +216,19 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     const extension = extensions[part.mimetype];
     if (!extension) return reply.code(415).send({ error: "Use a JPG, PNG, WebP, or GIF image." });
 
-    await mkdir(config.storageDir, { recursive: true });
-    const destination = path.join(config.storageDir, "avatar-" + randomUUID() + extension);
+    let destination: string | null = null;
     try {
-      await pipeline(part.file, fs.createWriteStream(destination, { flags: "wx" }));
+      if (b2StorageEnabled()) {
+        destination = await uploadObject(makeObjectKey("avatars", user.id, randomUUID() + extension), part.file, part.mimetype);
+      } else {
+        await mkdir(config.storageDir, { recursive: true });
+        const localPath = path.join(config.storageDir, "avatar-" + randomUUID() + extension);
+        await pipeline(part.file, fs.createWriteStream(localPath, { flags: "wx" }));
+        destination = localPath;
+      }
       if (part.file.truncated) {
-        await unlink(destination).catch(() => undefined);
+        if (destination && isB2ObjectPath(destination)) await deleteObject(destination).catch(() => undefined);
+        else if (destination) await unlink(destination).catch(() => undefined);
         return reply.code(413).send({ error: "Profile images must be 2 MB or smaller." });
       }
       const previous = await query<{ avatar_path: string | null }>("SELECT avatar_path FROM users WHERE id=$1", [user.id]);
@@ -229,10 +237,14 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
         [user.id, destination, part.mimetype]
       );
       const oldPath = previous.rows[0]?.avatar_path;
-      if (oldPath && oldPath !== destination) await unlink(oldPath).catch(() => undefined);
+      if (oldPath && oldPath !== destination) {
+        if (isB2ObjectPath(oldPath)) await deleteObject(oldPath).catch(() => undefined);
+        else await unlink(oldPath).catch(() => undefined);
+      }
       return { user: publicUser(updated.rows[0]) };
     } catch (error) {
-      await unlink(destination).catch(() => undefined);
+      if (destination && isB2ObjectPath(destination)) await deleteObject(destination).catch(() => undefined);
+      else if (destination) await unlink(destination).catch(() => undefined);
       if (part.file.truncated) return reply.code(413).send({ error: "Profile images must be 2 MB or smaller." });
       throw error;
     }
@@ -246,7 +258,18 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       [user.id]
     );
     const avatar = result.rows[0];
-    if (!avatar?.avatar_path || !fs.existsSync(avatar.avatar_path)) return reply.code(404).send({ error: "No profile image has been set." });
+    if (!avatar?.avatar_path) return reply.code(404).send({ error: "No profile image has been set." });
+    if (isB2ObjectPath(avatar.avatar_path)) {
+      try {
+        const stream = await getObjectStream(avatar.avatar_path);
+        reply.header("Content-Type", avatar.avatar_mime_type || "application/octet-stream");
+        reply.header("Cache-Control", "private, no-store");
+        return reply.send(stream);
+      } catch {
+        return reply.code(404).send({ error: "The profile image is unavailable." });
+      }
+    }
+    if (!fs.existsSync(avatar.avatar_path)) return reply.code(404).send({ error: "No profile image has been set." });
     reply.header("Content-Type", avatar.avatar_mime_type || "application/octet-stream");
     reply.header("Cache-Control", "private, no-store");
     return reply.send(fs.createReadStream(avatar.avatar_path));
