@@ -588,7 +588,7 @@ function TransferRow({ transfer, kind, onCopy, onRefresh, userId }: { transfer: 
   return <article className={"transfer-row" + (kind === "link" ? " transfer-row-link" : "")}>
     <span className="transfer-file-icon"><Icon name="file"/></span>
     <div className="transfer-file-meta"><strong>{transfer.filename}</strong><span>{bytes(transfer.filesize)} · {received ? "From " + (transfer.senderUsername ? "@" + transfer.senderUsername : transfer.senderName || transfer.senderEmail || "RAVEN user") : kind !== "link" && (transfer.recipientUsername || transfer.recipientName || transfer.recipientEmail) ? "To " + (transfer.recipientUsername ? "@" + transfer.recipientUsername : transfer.recipientName || transfer.recipientEmail) : transfer.createdAt ? new Date(transfer.createdAt).toLocaleString() : "Recently"}</span>
-      {kind === "link" && <small>{transfer.expiresAt ? "Expires " + new Date(transfer.expiresAt).toLocaleString() : "No expiry set"} · {(transfer.viewCount || 0)} opens · {(transfer.downloadCount || 0)} downloads</small>}
+      {kind === "link" && <small>{transfer.expiresAt ? "Expires " + new Date(transfer.expiresAt).toLocaleString() : "No expiry set"} · {(transfer.viewCount || 0)} access requests · {(transfer.downloadCount || 0)} download requests · counts are not unique visitors</small>}
     </div>
     <span className={"transfer-type type-" + kind}>{title}</span>
     {transfer.status === "completed" && transfer.encryptionVersion === 1 && userId && <button className="outline-button download-button" type="button" disabled={downloading} onClick={() => void downloadEncrypted()}><Icon name="lock"/>{downloading ? "Decrypting…" : "Decrypt & download"}</button>}
