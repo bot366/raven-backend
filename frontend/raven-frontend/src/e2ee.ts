@@ -433,6 +433,116 @@ export async function unwrapTransferKey(
   return fileKey;
 }
 
+export type TransferDecryptionMetadata = {
+  version: number;
+  filename: string;
+  mimeType: string;
+  originalSize: number;
+  plaintextChunkSize: number;
+  chunkCount: number;
+  noncePrefix: string;
+};
+
+/**
+ * Decrypt an HTTP response incrementally. Ciphertext is held only for the
+ * current authenticated chunk; only plaintext Blob parts are retained for
+ * the browser's normal download flow.
+ */
+export async function decryptTransferStreamToBlob(
+  fileKey: CryptoKey,
+  transferId: string,
+  metadata: TransferDecryptionMetadata,
+  stream: ReadableStream<Uint8Array> | null,
+): Promise<Blob> {
+  if (!stream) throw new Error("This browser could not open the encrypted download stream.");
+  const reader = stream.getReader();
+  const buffered: Uint8Array[] = [];
+  let bufferedBytes = 0;
+  let ended = false;
+  const pieces: BlobPart[] = [];
+  let recoveredBytes = 0;
+
+  const pull = async (): Promise<void> => {
+    if (ended) throw new Error("The encrypted download ended before all chunks arrived.");
+    const { value, done } = await reader.read();
+    if (done) {
+      ended = true;
+      return;
+    }
+    if (value && value.byteLength > 0) {
+      buffered.push(value);
+      bufferedBytes += value.byteLength;
+    }
+  };
+
+  const readExactly = async (size: number): Promise<Uint8Array> => {
+    while (bufferedBytes < size) await pull();
+    const output = new Uint8Array(size);
+    let written = 0;
+    while (written < size) {
+      const first = buffered[0];
+      if (!first) throw new Error("The encrypted download stream is incomplete.");
+      const take = Math.min(first.byteLength, size - written);
+      output.set(first.subarray(0, take), written);
+      written += take;
+      bufferedBytes -= take;
+      if (take === first.byteLength) buffered.shift();
+      else buffered[0] = first.subarray(take);
+    }
+    return output;
+  };
+
+  try {
+    if (metadata.version !== 1 || !Number.isSafeInteger(metadata.originalSize) ||
+        metadata.originalSize < 0 || !Number.isSafeInteger(metadata.chunkCount) ||
+        metadata.chunkCount !== Math.max(1, Math.ceil(metadata.originalSize / metadata.plaintextChunkSize)) ||
+        metadata.plaintextChunkSize !== CHUNK_PLAINTEXT_SIZE) {
+      throw new Error("The encrypted file metadata is invalid.");
+    }
+
+    for (let index = 0; index < metadata.chunkCount; index++) {
+      const plainSize = Math.min(
+        metadata.plaintextChunkSize,
+        metadata.originalSize - index * metadata.plaintextChunkSize,
+      );
+      const encryptedChunk = await readExactly(plainSize + 16);
+      const plaintext = await decryptTransferChunk(
+        fileKey,
+        transferId,
+        index,
+        metadata.chunkCount,
+        metadata.noncePrefix,
+        toArrayBuffer(encryptedChunk),
+      );
+      if (plaintext.byteLength !== plainSize) {
+        throw new Error("A decrypted chunk has an unexpected size.");
+      }
+      pieces.push(toArrayBuffer(plaintext));
+      recoveredBytes += plaintext.byteLength;
+    }
+
+    if (recoveredBytes !== metadata.originalSize) {
+      throw new Error("The decrypted file did not pass its size checks.");
+    }
+    if (bufferedBytes !== 0) {
+      throw new Error("The encrypted download contains unexpected trailing data.");
+    }
+    while (!ended) {
+      const { value, done } = await reader.read();
+      if (done) ended = true;
+      else if (value && value.byteLength > 0) {
+        throw new Error("The encrypted download contains unexpected trailing data.");
+      }
+    }
+    return new Blob(pieces, { type: metadata.mimeType || "application/octet-stream" });
+  } catch (error) {
+    await reader.cancel(error).catch(() => undefined);
+    throw error;
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 export async function decryptTransferChunk(
   fileKey: CryptoKey,
   transferId: string,
