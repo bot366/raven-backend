@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { pool, query } from "../db.js";
 import { SESSION_COOKIE_NAME, getAuthenticatedUser } from "../auth.js";
+import { validateEncryptionEnvelopes } from "../encryption-validation.js";
 
 type KeyBody = {
   publicKey?: unknown;
@@ -102,28 +103,16 @@ export async function encryptionRoutes(app: FastifyInstance): Promise<void> {
     const metadataNonce = request.body?.metadataNonce;
     const envelopes = request.body?.envelopes;
     if (!isBase64(metadata, 1, 8192) || !isBase64(metadataNonce, 12, 12) ||
-        !Array.isArray(envelopes) || envelopes.length !== 2) {
+        !Array.isArray(envelopes)) {
       return reply.code(400).send({ error: "Invalid encrypted transfer metadata or key envelopes." });
     }
 
-    const participants = new Set([user.id, ...(transfer.recipient_user_id ? [transfer.recipient_user_id] : [])]);
-    const requiredEnvelopeCount = participants.size;
-    if (envelopes.length !== requiredEnvelopeCount) {
-      return reply.code(400).send({ error: "The transfer must contain exactly one key envelope for each participant." });
-    }
-    const seen = new Set<string>();
-    for (const envelope of envelopes) {
-      if (typeof envelope.userId !== "string" || !participants.has(envelope.userId) ||
-          seen.has(envelope.userId) ||
-          !Number.isSafeInteger(envelope.keyVersion) || Number(envelope.keyVersion) < 1 ||
-          !isBase64(envelope.enc, 65, 65) || !isBase64(envelope.ciphertext, 48, 256)) {
-        return reply.code(400).send({ error: "Invalid recipient key envelope." });
-      }
-      seen.add(envelope.userId);
-    }
-    if (seen.size !== requiredEnvelopeCount) return reply.code(400).send({ error: "A key envelope is required for every transfer participant." });
+    const participantIds = [user.id, ...(transfer.recipient_user_id ? [transfer.recipient_user_id] : [])];
+    const validation = validateEncryptionEnvelopes(envelopes, participantIds);
+    if (!validation.ok) return reply.code(400).send({ error: validation.error });
+    const validatedEnvelopes = validation.envelopes;
 
-    for (const envelope of envelopes) {
+    for (const envelope of validatedEnvelopes) {
       const currentKey = await query<{ key_version: number }>(
         "SELECT key_version FROM user_encryption_keys WHERE user_id=$1",
         [envelope.userId]
@@ -161,6 +150,7 @@ export async function encryptionRoutes(app: FastifyInstance): Promise<void> {
     } finally {
       client.release();
     }
+    reply.header("Cache-Control", "no-store, private");
     return { saved: true };
   });
 
@@ -194,6 +184,7 @@ export async function encryptionRoutes(app: FastifyInstance): Promise<void> {
       [request.params.id, user.id]
     );
     if (!result.rows[0]) return reply.code(404).send({ error: "Encrypted transfer key was not found for this account." });
+    reply.header("Cache-Control", "no-store, private");
     return { envelope: result.rows[0] };
   });
 }
