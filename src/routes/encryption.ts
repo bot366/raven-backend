@@ -94,8 +94,8 @@ export async function encryptionRoutes(app: FastifyInstance): Promise<void> {
     );
     const transfer = transferResult.rows[0];
     if (!transfer) return reply.code(404).send({ error: "Transfer not found." });
-    if (transfer.status !== "pending" || transfer.encryption_version !== 1 || !transfer.recipient_user_id) {
-      return reply.code(409).send({ error: "This is not a pending encrypted account-to-account transfer." });
+    if (transfer.status !== "pending" || transfer.encryption_version !== 1) {
+      return reply.code(409).send({ error: "This is not a pending encrypted transfer." });
     }
 
     const metadata = request.body?.encryptedMetadata;
@@ -106,7 +106,11 @@ export async function encryptionRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(400).send({ error: "Invalid encrypted transfer metadata or key envelopes." });
     }
 
-    const participants = new Set([user.id, transfer.recipient_user_id]);
+    const participants = new Set([user.id, ...(transfer.recipient_user_id ? [transfer.recipient_user_id] : [])]);
+    const requiredEnvelopeCount = participants.size;
+    if (envelopes.length !== requiredEnvelopeCount) {
+      return reply.code(400).send({ error: "The transfer must contain exactly one key envelope for each participant." });
+    }
     const seen = new Set<string>();
     for (const envelope of envelopes) {
       if (typeof envelope.userId !== "string" || !participants.has(envelope.userId) ||
@@ -158,6 +162,23 @@ export async function encryptionRoutes(app: FastifyInstance): Promise<void> {
       client.release();
     }
     return { saved: true };
+  });
+
+  app.get<{ Params: { token: string } }>("/share/:token/envelope", async (request, reply) => {
+    const result = await query(
+      `SELECT t.id, t.user_id AS sender_user_id, t.encryption_version,
+              t.encrypted_metadata, t.metadata_nonce,
+              e.key_version, e.enc, e.ciphertext,
+              sender.public_key AS sender_public_key
+       FROM transfers t
+       JOIN transfer_key_envelopes e ON e.transfer_id=t.id AND e.user_id=t.user_id
+       JOIN user_encryption_keys sender ON sender.user_id=t.user_id
+       WHERE t.share_token=$1 AND t.encryption_version=1
+         AND t.status='completed' AND (t.expires_at IS NULL OR t.expires_at>NOW())`,
+      [request.params.token]
+    );
+    if (!result.rows[0]) return reply.code(404).send({ error: "Encrypted share not found or expired." });
+    return { envelope: result.rows[0] };
   });
 
   app.get<{ Params: { id: string } }>("/transfers/:id/envelope", async (request, reply) => {
