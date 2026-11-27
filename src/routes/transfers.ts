@@ -486,6 +486,7 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
   const r=await query<TransferRow>("SELECT * FROM transfers WHERE share_token=$1",[request.params.token]);
   const row=r.rows[0];
   if(!row)return reply.code(404).send({error:"Share link not found."});
+  if(row.encryption_version===1)reply.header("Cache-Control","no-store, private");
   return sendFile(reply,row);
  });
 
