@@ -36,6 +36,7 @@ function publicTransfer(row:TransferStatsRow){
 async function requireUser(request:FastifyRequest,reply:FastifyReply){
  const user=await getAuthenticatedUser(request.cookies?.[SESSION_COOKIE_NAME]);
  if(!user){reply.code(401).send({error:"Please log in to access this transfer."});return null;}
+ if(!user.emailVerified){reply.code(403).send({error:"Verify your email address before using file transfers.",code:"EMAIL_NOT_VERIFIED"});return null;}
  return user;
 }
 
@@ -385,11 +386,11 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
   const identifier=typeof request.query.identifier==="string"?request.query.identifier.trim().toLowerCase().replace(/^@/,""):"";
   if(!identifier||identifier.length>254)return reply.code(400).send({error:"Enter a username or email address."});
   const found=await query<{id:string;display_name:string;username:string|null}>(
-   "SELECT id,display_name,username FROM users WHERE LOWER(email)=$1 OR LOWER(username)=$1 LIMIT 1",
+   "SELECT id,display_name,username FROM users WHERE (LOWER(email)=$1 OR LOWER(username)=$1) AND email_verified=TRUE LIMIT 1",
    [identifier]
   );
   const recipient=found.rows[0];
-  if(!recipient)return reply.code(404).send({error:"No RAVEN account was found with that username or email."});
+  if(!recipient)return reply.code(404).send({error:"No verified RAVEN account was found with that username or email."});
   if(recipient.id===user.id)return reply.code(400).send({error:"You cannot send a file to your own account."});
   return {user:{id:recipient.id,displayName:recipient.display_name,username:recipient.username}};
  });
@@ -413,7 +414,7 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
     return reply.code(400).send({error:"Enter a valid username or email address."});
    }
    const recipient=await query<{id:string}>(
-    "SELECT id FROM users WHERE LOWER(email)=$1 OR LOWER(username)=$1 LIMIT 1",
+    "SELECT id FROM users WHERE (LOWER(email)=$1 OR LOWER(username)=$1) AND email_verified=TRUE LIMIT 1",
     [recipientIdentifier]
    );
    if(!recipient.rows[0])return reply.code(404).send({error:"No RAVEN account was found with that username or email."});
@@ -495,7 +496,7 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
  });
 
  app.get<{Params:{token:string}}>("/share/:token/download",async(request,reply)=>{
-  const r=await query<TransferRow>("SELECT * FROM transfers WHERE share_token=$1",[request.params.token]);
+  const r=await query<TransferRow>("SELECT t.* FROM transfers t LEFT JOIN users u ON u.id=t.user_id WHERE t.share_token=$1 AND (t.user_id IS NULL OR u.email_verified=TRUE)",[request.params.token]);
   const row=r.rows[0];
   if(!row)return reply.code(404).send({error:"Share link not found."});
   if(row.encryption_version===1)reply.header("Cache-Control","no-store, private");
@@ -509,7 +510,7 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
  // Legacy links keep their original download behavior. Encrypted links are downloaded
  // by the frontend client after reading the key from the URL fragment.
  app.get<{Params:{token:string}}>("/share/:token",async(request,reply)=>{
-  const r=await query<TransferRow>("SELECT * FROM transfers WHERE share_token=$1",[request.params.token]);
+  const r=await query<TransferRow>("SELECT t.* FROM transfers t LEFT JOIN users u ON u.id=t.user_id WHERE t.share_token=$1 AND (t.user_id IS NULL OR u.email_verified=TRUE)",[request.params.token]);
   const row=r.rows[0];
   if(!row)return reply.code(404).send({error:"Share link not found."});
   if(row.encryption_version===1)return reply.code(409).send({error:"This is an encrypted share. Open it in the RAVEN web app to decrypt it locally."});

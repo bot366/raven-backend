@@ -11,7 +11,10 @@ export const config={
  maxFileSizeBytes:numberFromEnv("MAX_FILE_SIZE_MB",100)*1024*1024,
  expiryHours:numberFromEnv("TRANSFER_EXPIRY_HOURS",24),
  publicBaseUrl:(process.env.PUBLIC_BASE_URL??"http://localhost:3000").replace(/\/$/,""),
- corsOrigin:process.env.CORS_ORIGIN??""
+ corsOrigin:process.env.CORS_ORIGIN??"",
+ resendApiKey:process.env.RESEND_API_KEY??"",
+ emailFrom:process.env.EMAIL_FROM??"",
+ frontendBaseUrl:(process.env.FRONTEND_BASE_URL??process.env.CORS_ORIGIN?.split(",")[0]??"http://localhost:5173").replace(/\/$/,"")
 };
 if(!config.databaseUrl) throw new Error("DATABASE_URL is missing from environment.");
 if(!config.corsOrigin.trim()) throw new Error("CORS_ORIGIN must contain the deployed frontend origin.");
