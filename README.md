@@ -121,9 +121,9 @@ The current file store writes to the service's local filesystem. Render filesyst
 Never commit `.env`, database credentials, API keys, session cookies, or uploaded files.
 
 
-## End-to-end encryption (controlled-testing implementation)
+## End-to-end encryption (experimental implementation)
 
-The E2EE path in this branch applies to new direct account-to-account transfers only. The browser encrypts each file chunk with AES-256-GCM before upload. Chunk nonces are unique within the transfer and the transfer ID, chunk index, and chunk count are authenticated as additional data. The filename, MIME type, plaintext size, chunk layout, and nonce prefix are encrypted as transfer metadata. Each file receives a random data-encryption key.
+The E2EE path in this branch supports new direct account-to-account transfers and encrypted public share links. The browser encrypts each file chunk with AES-256-GCM before upload. Chunk nonces are unique within the transfer and the transfer ID, chunk index, and chunk count are authenticated as additional data. The filename, MIME type, plaintext size, chunk layout, and nonce prefix are encrypted as transfer metadata. Each file receives a random data-encryption key.
 
 That data key is wrapped separately for the sender and recipient using HPKE Auth mode with DHKEM(P-256), HKDF-SHA256, and AES-256-GCM. HPKE context info binds each envelope to the transfer ID, sender account ID, recipient account ID, and envelope purpose. The server stores ciphertext, encrypted metadata, and the two key envelopes. It does not receive the file key or plaintext private key. Server-side SHA-256 checks validate ciphertext integrity; AES-GCM authentication detects unauthorized changes during decryption.
 
@@ -131,13 +131,13 @@ Each account creates an encryption identity in Settings. The private key is encr
 
 Before sending to a new contact, the sender must compare the recipient's public-key fingerprint with a value the recipient shares through a separate trusted channel. The recipient performs the same check on the sender when decrypting the transfer. Verified peer fingerprints are pinned in that browser profile. A changed key is rejected rather than silently trusted. The fingerprint is SHA-256 over the raw P-256 public key, displayed in grouped hexadecimal. Clearing browser site data removes pins, so users must verify contacts again.
 
-Important limitations for this first implementation:
+Important limitations for this experimental implementation:
 - This branch is not merged or deployed. Do not run its database SQL on the live database until this PR has been reviewed and approved.
-- Public share links are not E2EE in this iteration. The new encrypted-send interface therefore requires a RAVEN recipient. Existing public links remain legacy, non-E2EE links.
+- Public encrypted links are bearer secrets. Anyone with the complete link, including the key after `#`, can decrypt the file. Legacy public links remain unencrypted.
 - Existing transfers are not retroactively encrypted and remain marked as legacy (encryption version 0).
 - The server still sees sender, recipient, timing, IP/network details, encrypted byte size, and transfer status.
 - This is out-of-band fingerprint verification with local pinning, not a cryptographic key-transparency service. First-contact security depends on users comparing fingerprints through a genuinely separate trusted channel. Browser storage can be cleared; after that, re-verification is required. Key rotation and safe key replacement are not implemented.
 - A compromised frontend build, browser extension, malware, or compromised endpoint can expose plaintext while the user opens or sends a file. Non-exportable keys reduce direct key export but do not stop malicious JavaScript from asking the browser to perform cryptographic operations while the page is compromised.
 - This is an experimental controlled-testing implementation, not an audited secure file-sharing product. Test only with disposable, non-sensitive files and obtain an independent security review before handling private data.
 
-The recipient and sender can decrypt a completed encrypted transfer from their respective transfer lists using their unlocked account encryption identity. The browser decrypts the ciphertext locally and checks AES-GCM authentication before triggering the download.
+Encrypted downloads decrypt the response incrementally, one authenticated chunk at a time. The browser assembles verified plaintext chunks into a download Blob; very large files can still use substantial memory. The recipient and sender can decrypt a completed encrypted transfer from their respective transfer lists using their unlocked account encryption identity. The browser decrypts the ciphertext locally, checks AES-GCM authentication for every chunk, and triggers the download only after the full stream passes its length and integrity checks.
