@@ -492,8 +492,8 @@ function App() {
               <div className="welcome-art"><div className="art-glow"/><DeliveryRaven/><span>YOUR NEXT DELIVERY STARTS HERE</span></div>
             </section>
             <section className="stats-grid">
-              <StatCard icon="sent" label="Files sent" value={String(sentCompleted.length)} note="Successful uploads"/>
-              <StatCard icon="received" label="Files received" value={String(received.length)} note="In your inbox"/>
+              <StatCard icon="sent" label="Files sent" value={String(sentCompleted.length)} note="Latest 100 transfer records"/>
+              <StatCard icon="received" label="Files received" value={String(received.length)} note="Latest 100 inbox records"/>
               <StatCard icon="links" label="Active links" value={String(activeLinks.length)} note="Public links still available"/>
               <StatCard icon="file" label="In progress" value={String(pendingTransfers)} note="Pending uploads"/>
             </section>
@@ -548,7 +548,7 @@ function TransferRow({ transfer, kind, onCopy, onRefresh, userId }: { transfer: 
   const [copied, setCopied] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [managing, setManaging] = useState(false);
-  const [expiryChoice, setExpiryChoice] = useState("24");
+  const [expiryChoice, setExpiryChoice] = useState("");
   const downloadEncrypted = async () => {
     if (!userId || downloading) return;
     setDownloading(true);
@@ -594,9 +594,9 @@ function TransferRow({ transfer, kind, onCopy, onRefresh, userId }: { transfer: 
     {kind === "link" && transfer.encryptionVersion === 1 && transfer.status === "completed" && !shareLink && <span className="transfer-type">Link key only available in the send confirmation</span>}
     {kind === "link" && transfer.status === "completed" && <div className="link-management">
       <select aria-label="Link expiry" value={expiryChoice} onChange={(event) => setExpiryChoice(event.target.value)} disabled={managing}>
-        <option value="1">1 hour</option><option value="24">1 day</option><option value="72">3 days</option><option value="168">7 days</option><option value="720">30 days</option>
+        <option value="" disabled>Choose new expiry</option><option value="1">1 hour</option><option value="24">1 day</option><option value="72">3 days</option><option value="168">7 days</option><option value="720">30 days</option>
       </select>
-      <button className="small-text-button" type="button" disabled={managing} onClick={() => void updateExpiry()}>{managing ? "Saving…" : "Update expiry"}</button>
+      <button className="small-text-button" type="button" disabled={managing || !expiryChoice} onClick={() => void updateExpiry()}>{managing ? "Saving…" : "Update expiry"}</button>
       <button className="small-text-button danger-text" type="button" disabled={managing} onClick={() => void revokeLink()}>Revoke</button>
     </div>}
     {!received && kind !== "link" && shareLink && transfer.status === "completed" && <button className="quiet-icon-button" title="Copy share link" onClick={() => void copy()}><Icon name="copy"/></button>}
@@ -716,13 +716,14 @@ function AccountSecuritySettings() {
   };
   const changePassword = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault(); setBusy(true); setError(""); setMessage("");
-    const form = new FormData(event.currentTarget);
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
     try {
       const result = await api<{message:string}>("/auth/password", {
         method: "PUT",
         body: JSON.stringify({ currentPassword: String(form.get("currentPassword") || ""), newPassword: String(form.get("newPassword") || "") })
       });
-      setMessage(result.message); event.currentTarget.reset(); await loadSessions();
+      setMessage(result.message); formElement.reset(); await loadSessions();
     } catch (passwordError) { setError(passwordError instanceof Error ? passwordError.message : "Could not change password."); }
     finally { setBusy(false); }
   };
