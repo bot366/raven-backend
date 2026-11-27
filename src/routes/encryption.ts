@@ -178,6 +178,7 @@ export async function encryptionRoutes(app: FastifyInstance): Promise<void> {
       [request.params.token]
     );
     if (!result.rows[0]) return reply.code(404).send({ error: "Encrypted share not found or expired." });
+    reply.header("Cache-Control", "no-store, private");
     return { envelope: result.rows[0] };
   });
 
