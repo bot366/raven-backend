@@ -232,6 +232,7 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
      [transfer.id,index,byteCount,actualHash,storedPath,user.id]
     );
     if(!inserted.rows[0]){
+     await deleteStoredPath(storedPath);
      await unlink(destination).catch(()=>undefined);
      return reply.code(409).send({error:"This transfer was cancelled before the chunk could be saved."});
     }
@@ -324,9 +325,11 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
     [transfer.id,user.id,finalStoragePath,digest,token]
    );
    if(!updated.rows[0]){
+    if(isB2ObjectPath(finalStoragePath)) await deleteObject(finalStoragePath).catch(()=>undefined);
     await unlink(destination).catch(()=>undefined);
     return reply.code(409).send({error:"Transfer changed before assembly completed."});
    }
+   if(isB2ObjectPath(finalStoragePath)) await unlink(destination).catch(()=>undefined);
    for(const part of parts.rows)await deleteStoredPath(part.storage_path);
    await query("DELETE FROM transfer_chunks WHERE transfer_id=$1",[transfer.id]);
    await fs.promises.rm(path.join(config.storageDir,"chunks",transfer.id),{recursive:true,force:true}).catch(()=>undefined);
@@ -493,9 +496,11 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
     [transfer.id,user.id,name,stat.size,storedPath,part.mimetype,await hashFile(destination),token]
    );
    if(!updated.rows[0]){
+    if(isB2ObjectPath(storedPath)) await deleteObject(storedPath).catch(()=>undefined);
     await unlink(destination).catch(()=>undefined);
     return reply.code(409).send({error:"Transfer changed before upload completed."});
    }
+   if(isB2ObjectPath(storedPath)) await unlink(destination).catch(()=>undefined);
    return reply.code(201).send({
     message:"File uploaded successfully.",
     transfer:publicTransfer(updated.rows[0]),
