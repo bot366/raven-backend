@@ -501,16 +501,16 @@ function App() {
               <StatCard icon="file" label="In progress" value={String(pendingTransfers)} note="Pending uploads"/>
             </section>
             <section className="content-card activity-card">
-              <div className="section-heading"><div><span className="section-kicker">LATEST UPDATES</span><h2>Recent activity</h2></div><button className="text-button" onClick={() => selectPage("sent")}>View sent files <span>→</span></button></div>
+              <div className="section-heading"><div><span className="section-kicker">LATEST UPDATES</span><h2>Recent activity</h2></div><div className="section-actions"><button className="text-button" type="button" onClick={() => void refreshTransfers()} disabled={loadingTransfers}>{loadingTransfers ? "Refreshing…" : "Refresh"}</button><button className="text-button" onClick={() => selectPage("sent")}>View sent files <span>→</span></button></div></div>
               {loadingTransfers ? <LoadingLine/> : recent.length === 0 ? <EmptyState title="No activity yet" text="Your sent and received files will appear here."/> : <div className="activity-list">{recent.map((item) => <TransferRow key={item.id} transfer={item} userId={user.id} kind={received.some((rec) => rec.id === item.id) ? "received" : "sent"} />)}</div>}
             </section>
           </>}
 
-          {page === "sent" && <section className="content-card full-list-card"><div className="section-heading"><div><span className="section-kicker">YOUR OUTGOING FILES</span><h2>Sent files</h2></div><button className="primary-button compact-button" onClick={openSend}><Icon name="upload"/> Send a file</button></div><TransferToolbar search={fileSearch} onSearch={setFileSearch} status={fileStatus} onStatus={setFileStatus} sort={fileSort} onSort={setFileSort}/>{loadingTransfers ? <LoadingLine/> : transfers.length === 0 ? <EmptyState title="Nothing sent yet" text="Files you upload will appear here."/> : displayedSent.length === 0 ? <EmptyState title="No matching files" text="Try another search or status filter."/> : <div className="activity-list">{displayedSent.map((item) => <TransferRow key={item.id} transfer={item} userId={user.id} kind="sent" onCopy={setPageError} onRefresh={refreshTransfers}/>)}</div>}</section>}
+          {page === "sent" && <section className="content-card full-list-card"><div className="section-heading"><div><span className="section-kicker">YOUR OUTGOING FILES</span><h2>Sent files</h2></div><div className="section-actions"><button className="text-button" type="button" onClick={() => void refreshTransfers()} disabled={loadingTransfers}>{loadingTransfers ? "Refreshing…" : "Refresh"}</button><button className="primary-button compact-button" onClick={openSend}><Icon name="upload"/> Send a file</button></div></div><TransferToolbar search={fileSearch} onSearch={setFileSearch} status={fileStatus} onStatus={setFileStatus} sort={fileSort} onSort={setFileSort}/>{loadingTransfers ? <LoadingLine/> : transfers.length === 0 ? <EmptyState title="Nothing sent yet" text="Files you upload will appear here."/> : displayedSent.length === 0 ? <EmptyState title="No matching files" text="Try another search or status filter."/> : <div className="activity-list">{displayedSent.map((item) => <TransferRow key={item.id} transfer={item} userId={user.id} kind="sent" onCopy={setPageError} onRefresh={refreshTransfers}/>)}</div>}</section>}
 
-          {page === "received" && <section className="content-card full-list-card"><div className="section-heading"><div><span className="section-kicker">DELIVERED TO YOU</span><h2>Received files</h2></div><span className="count-pill">{received.length} files</span></div><TransferToolbar search={fileSearch} onSearch={setFileSearch} status={fileStatus} onStatus={setFileStatus} sort={fileSort} onSort={setFileSort}/>{loadingTransfers ? <LoadingLine/> : received.length === 0 ? <EmptyState title="Your inbox is empty" text="Files sent directly to your RAVEN username or email will appear here."/> : displayedReceived.length === 0 ? <EmptyState title="No matching files" text="Try another search or status filter."/> : <div className="activity-list">{displayedReceived.map((item) => <TransferRow key={item.id} transfer={item} userId={user.id} kind="received" onCopy={setPageError}/>)}</div>}</section>}
+          {page === "received" && <section className="content-card full-list-card"><div className="section-heading"><div><span className="section-kicker">DELIVERED TO YOU</span><h2>Received files</h2></div><div className="section-actions"><span className="count-pill">{received.length} files</span><button className="text-button" type="button" onClick={() => void refreshTransfers()} disabled={loadingTransfers}>{loadingTransfers ? "Refreshing…" : "Refresh"}</button></div></div><TransferToolbar search={fileSearch} onSearch={setFileSearch} status={fileStatus} onStatus={setFileStatus} sort={fileSort} onSort={setFileSort}/>{loadingTransfers ? <LoadingLine/> : received.length === 0 ? <EmptyState title="Your inbox is empty" text="Files sent directly to your RAVEN username or email will appear here."/> : displayedReceived.length === 0 ? <EmptyState title="No matching files" text="Try another search or status filter."/> : <div className="activity-list">{displayedReceived.map((item) => <TransferRow key={item.id} transfer={item} userId={user.id} kind="received" onCopy={setPageError}/>)}</div>}</section>}
 
-          {page === "links" && <section className="content-card full-list-card"><div className="section-heading"><div><span className="section-kicker">LINK SHARING</span><h2>Shared links</h2></div><span className="count-pill">{sharedLinks.length} links</span></div><TransferToolbar search={fileSearch} onSearch={setFileSearch} status={fileStatus} onStatus={setFileStatus} sort={fileSort} onSort={setFileSort}/>{sharedLinks.length === 0 ? <EmptyState title="No shared links yet" text="Upload a file without choosing a recipient to create a share link."/> : displayedLinks.length === 0 ? <EmptyState title="No matching links" text="Try another search or status filter."/> : <div className="activity-list">{displayedLinks.map((item) => <TransferRow key={item.id} transfer={item} userId={user.id} kind="link" onCopy={setPageError} onRefresh={refreshTransfers}/>)}</div>}</section>}
+          {page === "links" && <section className="content-card full-list-card"><div className="section-heading"><div><span className="section-kicker">LINK SHARING</span><h2>Shared links</h2></div><div className="section-actions"><span className="count-pill">{sharedLinks.length} links</span><button className="text-button" type="button" onClick={() => void refreshTransfers()} disabled={loadingTransfers}>{loadingTransfers ? "Refreshing…" : "Refresh"}</button></div></div><TransferToolbar search={fileSearch} onSearch={setFileSearch} status={fileStatus} onStatus={setFileStatus} sort={fileSort} onSort={setFileSort}/>{sharedLinks.length === 0 ? <EmptyState title="No shared links yet" text="Upload a file without choosing a recipient to create a share link."/> : displayedLinks.length === 0 ? <EmptyState title="No matching links" text="Try another search or status filter."/> : <div className="activity-list">{displayedLinks.map((item) => <TransferRow key={item.id} transfer={item} userId={user.id} kind="link" onCopy={setPageError} onRefresh={refreshTransfers}/>)}</div>}</section>}
 
           {page === "settings" && <ProfileSettings user={user} avatarUrl={avatarUrl} setUser={setUser} setAvatarUrl={setAvatarUrl} setError={setPageError} theme={theme} setTheme={setTheme} compact={compact} setCompact={setCompact}/>}
           <footer className="workspace-footer"><span>RAVEN / Your files, in one place.</span><span>Secure account workspace</span></footer>
@@ -592,7 +592,7 @@ function TransferRow({ transfer, kind, onCopy, onRefresh, userId }: { transfer: 
     </div>
     <span className={"transfer-type type-" + kind}>{title}</span>
     {transfer.status === "completed" && transfer.encryptionVersion === 1 && userId && <button className="outline-button download-button" type="button" disabled={downloading} onClick={() => void downloadEncrypted()}><Icon name="lock"/>{downloading ? "Decrypting…" : "Decrypt & download"}</button>}
-    {received && transfer.status === "completed" && transfer.encryptionVersion !== 1 && <a className="outline-button download-button" href={downloadUrl}><Icon name="download"/> Download</a>}
+    {(received || kind === "sent") && transfer.status === "completed" && transfer.encryptionVersion !== 1 && <a className="outline-button download-button" href={downloadUrl}><Icon name="download"/> Download</a>}
     {kind === "link" && transfer.status === "completed" && shareLink && <button className="outline-button" onClick={() => void copy()}><Icon name="copy"/> {copied ? "Copied" : "Copy link"}</button>}
     {kind === "link" && transfer.encryptionVersion === 1 && transfer.status === "completed" && !shareLink && <span className="transfer-type">Link key only available in the send confirmation</span>}
     {kind === "link" && transfer.status === "completed" && <div className="link-management">
@@ -718,13 +718,27 @@ function AccountSecuritySettings() {
     finally { setBusy(false); }
   };
   const changePassword = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault(); setBusy(true); setError(""); setMessage("");
+    event.preventDefault();
     const formElement = event.currentTarget;
     const form = new FormData(formElement);
+    const currentPassword = String(form.get("currentPassword") || "");
+    const newPassword = String(form.get("newPassword") || "");
+    const confirmPassword = String(form.get("confirmPassword") || "");
+    if (newPassword !== confirmPassword) {
+      setError("The new password and confirmation do not match.");
+      setMessage("");
+      return;
+    }
+    if (newPassword === currentPassword) {
+      setError("Choose a new password that is different from your current password.");
+      setMessage("");
+      return;
+    }
+    setBusy(true); setError(""); setMessage("");
     try {
       const result = await api<{message:string}>("/auth/password", {
         method: "PUT",
-        body: JSON.stringify({ currentPassword: String(form.get("currentPassword") || ""), newPassword: String(form.get("newPassword") || "") })
+        body: JSON.stringify({ currentPassword, newPassword })
       });
       setMessage(result.message); formElement.reset(); await loadSessions();
     } catch (passwordError) { setError(passwordError instanceof Error ? passwordError.message : "Could not change password."); }
@@ -734,10 +748,10 @@ function AccountSecuritySettings() {
     <div className="section-heading"><div><span className="section-kicker">ACCOUNT PROTECTION</span><h2>Password & sessions</h2></div></div>
     <form className="settings-block password-form" onSubmit={(event) => void changePassword(event)}>
       <div><h3>Change password</h3><p>Changing your password signs out other active sessions.</p></div>
-      <div className="password-fields"><label className="field-label">Current password<input name="currentPassword" type="password" autoComplete="current-password" minLength={8} maxLength={128} required/></label><label className="field-label">New password<input name="newPassword" type="password" autoComplete="new-password" minLength={8} maxLength={128} required/></label><button className="primary-button compact-button" disabled={busy}>Update password</button></div>
+      <div className="password-fields"><label className="field-label">Current password<input name="currentPassword" type="password" autoComplete="current-password" minLength={8} maxLength={128} required/></label><label className="field-label">New password<input name="newPassword" type="password" autoComplete="new-password" minLength={8} maxLength={128} required/></label><label className="field-label">Confirm new password<input name="confirmPassword" type="password" autoComplete="new-password" minLength={8} maxLength={128} required/></label><button className="primary-button compact-button" disabled={busy}>Update password</button></div>
     </form>
     <div className="settings-divider"/>
-    <div className="settings-block"><div><h3>Active sessions</h3><p>Review signed-in sessions. The current browser is identified below.</p></div><div className="session-list">{loading ? <LoadingLine/> : sessions.length === 0 ? <small>No active sessions found.</small> : sessions.map((session) => <div className="session-item" key={session.id}><span><strong>{session.current ? "This device" : "Other session"}</strong><small>Signed in {new Date(session.createdAt).toLocaleString()} · Expires {new Date(session.expiresAt).toLocaleString()}</small></span>{session.current && <span className="status-tag status-completed">Current</span>}</div>)}<button className="outline-button" type="button" onClick={() => void revokeOthers()} disabled={busy || loading || sessions.filter((session) => !session.current).length === 0}>{busy ? "Please wait…" : "Sign out other sessions"}</button></div></div>
+    <div className="settings-block"><div><h3>Active sessions</h3><p>Review signed-in sessions. The current browser is identified below.</p></div><div className="session-list">{loading ? <LoadingLine/> : sessions.length === 0 ? <small>No active sessions found.</small> : sessions.map((session) => <div className="session-item" key={session.id}><span><strong>{session.current ? "This device" : "Other session"}</strong><small>Signed in {new Date(session.createdAt).toLocaleString()} · Expires {new Date(session.expiresAt).toLocaleString()}</small></span>{session.current && <span className="status-tag status-completed">Current</span>}</div>)}<div className="session-actions"><button className="outline-button" type="button" onClick={() => void loadSessions()} disabled={busy || loading}>{loading ? "Refreshing…" : "Refresh sessions"}</button><button className="outline-button" type="button" onClick={() => void revokeOthers()} disabled={busy || loading || sessions.filter((session) => !session.current).length === 0}>{busy ? "Please wait…" : "Sign out other sessions"}</button></div></div></div>
     {message && <div className="success-message"><Icon name="check"/>{message}</div>}
     {error && <div className="form-alert" role="alert">{error}</div>}
   </section>;
@@ -788,6 +802,17 @@ function ProfileSettings({ user, avatarUrl, setUser, setAvatarUrl, setError, the
     } catch (error) { setError(error instanceof Error ? error.message : "Could not upload profile photo."); }
     finally { setPhotoBusy(false); if (avatarInput.current) avatarInput.current.value = ""; }
   };
+  const removeAvatar = async () => {
+    if (!window.confirm("Remove your profile picture?")) return;
+    setPhotoBusy(true); setError(""); setMessage("");
+    try {
+      const result = await api<{ user: User; message: string }>("/profile/avatar", { method: "DELETE" });
+      setUser(result.user);
+      setAvatarUrl("");
+      setMessage(result.message);
+    } catch (error) { setError(error instanceof Error ? error.message : "Could not remove profile photo."); }
+    finally { setPhotoBusy(false); }
+  };
   return <section className="content-card settings-card"><div className="section-heading"><div><span className="section-kicker">YOUR ACCOUNT</span><h2>Profile settings</h2></div></div>
     <div className="profile-summary"><Avatar user={user} imageUrl={avatarUrl} size="large"/><div><strong>{user.displayName}</strong><span>@{user.username}</span><small>{user.email}</small></div></div>
     <form className="settings-block username-settings" onSubmit={(event) => void saveDisplayName(event)}><div><h3>Display name</h3><p>This name is shown to people receiving files from you.</p></div><div className="username-edit"><label className="field-label">Your name<input value={displayName} onChange={(event) => setDisplayName(event.target.value)} minLength={2} maxLength={60} required/></label><button className="primary-button compact-button" disabled={displaySaving || displayName.trim() === user.displayName}>{displaySaving ? "Saving…" : "Save name"}</button></div></form>
@@ -796,7 +821,7 @@ function ProfileSettings({ user, avatarUrl, setUser, setAvatarUrl, setError, the
     <div className="settings-divider"/>
     <div className="settings-block"><div><h3>Appearance</h3><p>Choose how RAVEN looks on this device.</p></div><div className="appearance-controls"><label>Theme<select value={theme} onChange={(event) => setTheme(event.target.value as "dark" | "light")}><option value="dark">Dark</option><option value="light">Light</option></select></label><label className="toggle-setting"><input type="checkbox" checked={compact} onChange={(event) => setCompact(event.target.checked)}/> Compact file lists</label></div></div>
     <div className="settings-divider"/>
-    <div className="settings-block"><div><h3>Profile picture</h3><p>Your initials are used by default. Add a picture whenever you're ready.</p></div><div className="photo-actions"><button className="outline-button" onClick={() => avatarInput.current?.click()} disabled={photoBusy}>{photoBusy ? "Uploading…" : "Change photo"}</button><input ref={avatarInput} className="visually-hidden" type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={(event) => void uploadAvatar(event)}/><small>JPG, PNG, WebP or GIF · Max 2 MB</small></div></div>
+    <div className="settings-block"><div><h3>Profile picture</h3><p>Your initials are used by default. Add a picture whenever you're ready.</p></div><div className="photo-actions"><div className="photo-buttons"><button className="outline-button" type="button" onClick={() => avatarInput.current?.click()} disabled={photoBusy}>{photoBusy ? "Please wait…" : "Change photo"}</button>{avatarUrl && <button className="small-text-button danger-text" type="button" onClick={() => void removeAvatar()} disabled={photoBusy}>Remove photo</button>}</div><input ref={avatarInput} className="visually-hidden" type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={(event) => void uploadAvatar(event)}/><small>JPG, PNG, WebP or GIF · Max 2 MB</small></div></div>
     <div className="settings-divider"/>
     <form className="settings-block username-settings" onSubmit={(event) => void saveUsername(event)}><div><h3>Username</h3><p>This is how other people can find you when sending files.</p></div><div className="username-edit"><label className="field-label">Your username<input value={username} onChange={(event) => setUsername(event.target.value)} minLength={3} maxLength={20} pattern="[A-Za-z0-9_]{3,20}" required/></label><button className="primary-button compact-button" disabled={saving || username === user.username}>{saving ? "Saving…" : "Save username"}</button></div></form>
     <div className="settings-divider"/>
