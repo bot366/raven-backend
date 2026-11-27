@@ -70,6 +70,15 @@ CREATE TABLE IF NOT EXISTS public.transfer_key_envelopes (
 CREATE INDEX IF NOT EXISTS transfer_key_envelopes_user_created_idx
   ON public.transfer_key_envelopes(user_id, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS public.transfer_events (
+  id BIGSERIAL PRIMARY KEY,
+  transfer_id UUID NOT NULL REFERENCES public.transfers(id) ON DELETE CASCADE,
+  event_type TEXT NOT NULL CHECK (event_type IN ('view','download')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS transfer_events_transfer_type_created_idx
+  ON public.transfer_events(transfer_id,event_type,created_at DESC);
+
 CREATE TABLE IF NOT EXISTS public.transfer_chunks (
   transfer_id UUID NOT NULL REFERENCES public.transfers(id) ON DELETE CASCADE,
   chunk_index INTEGER NOT NULL CHECK (chunk_index >= 0),
@@ -96,18 +105,19 @@ The backend migration script contains the same changes and is safe to rerun.
 
 ## API routes
 - `GET /health`
-- `POST /auth/register`, `POST /auth/login` (email or username), `POST /auth/logout`, `GET /auth/me`
-- `PUT /profile/username`, `PUT /profile/avatar`, `GET /profile/avatar`
+- `POST /auth/register`, `POST /auth/login` (email or username), `POST /auth/logout`, `GET /auth/me`, `PUT /auth/password`, `GET /auth/sessions`, `DELETE /auth/sessions/others`
+- `PUT /profile/display-name`, `PUT /profile/username`, `PUT /profile/avatar`, `GET /profile/avatar`
 - `GET /users/lookup?identifier=...`: authenticated username/email recipient lookup
 - `GET /encryption/keys/me`, `PUT /encryption/keys/me`: read or create the caller's encryption identity and encrypted recovery backup
 - `GET /encryption/keys/:userId/public`: retrieve a recipient's public encryption key
 - `POST /transfers/:id/envelopes`, `GET /transfers/:id/envelope`: store and retrieve participant-only encrypted file-key envelopes
 - `GET /transfers`: authenticated user's latest 100 sent transfers
 - `GET /transfers/received`: authenticated user's latest 100 files sent directly to their RAVEN account
+- `POST /transfers/:id/expiry`, `POST /transfers/:id/revoke-link`: manage active public share links
 - `POST /transfers`, `POST /transfers/:id/upload`: authenticated legacy single-request upload; include optional `recipientIdentifier` (username or email) when creating a direct account-to-account transfer
 - `POST /transfers/:id/chunks/start`, `GET /transfers/:id/chunks`, `PUT /transfers/:id/chunks/:index`, `POST /transfers/:id/chunks/complete`, `DELETE /transfers/:id/chunks`: authenticated chunked upload session, status, chunk receipt, assembly, and cancellation
 - `GET /transfers/:id`, `GET /transfers/:id/download`: authenticated sender or designated recipient
-- `GET /share/:token`: public token-based download
+- `GET /share/:token`, `GET /share/:token/download`: public token-based download; encrypted public shares record opens/downloads
 
 ## Chunked uploads
 
