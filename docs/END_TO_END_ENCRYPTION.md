@@ -60,7 +60,7 @@ This prevents an otherwise valid envelope from being replayed or swapped across 
 - Fingerprints are SHA-256 over the raw uncompressed P-256 public key.
 - On first contact, the sender must compare the recipient's fingerprint with a value the recipient shared out-of-band through a separate trusted channel, such as an in-person comparison or voice call.
 - On receipt, the recipient performs the same verification for the sender.
-- Public encrypted share links use a random DEK in the URL fragment (`#key=...`). URL fragments are not sent in HTTP requests, so the server receives the token but not the decryption key. Anyone who receives the complete link can decrypt the file. The browser uses the fragment key to decrypt locally; the server stores only ciphertext and the sender envelope.
+- Public encrypted share links use a random DEK in the URL fragment (`#key=...`). URL fragments are not sent in HTTP requests, so the server receives the token but not the decryption key. Anyone who receives the complete link can decrypt the file. The browser uses the fragment key to decrypt locally; the server stores only ciphertext and the sender envelope. The sender's copy of the complete link is retained in tab-scoped session storage so it can be copied after a page refresh; it is not written to persistent local storage and is cleared on logout or when the tab session ends.
 - The browser stores verified fingerprints per local-account/peer-account pair. A changed fingerprint is rejected, not silently accepted.
 - Clearing browser site data removes local pins; contacts must be verified again.
 
@@ -80,7 +80,7 @@ This is out-of-band verification with local pinning, not a key-transparency serv
 ## 5. Compatibility and exclusions
 
 - Direct RAVEN account-to-account transfers and public encrypted share links are supported in this branch.
-- Public links are bearer secrets: anyone with the complete link can decrypt the file. RAVEN does not store the fragment key. It is retained only in the current tab's memory so the sender can copy it again while that tab remains open; after reload, the full link must be recovered from the sender's original copy or recreated with a new transfer.
+- Public links are bearer secrets: anyone with the complete link can decrypt the file. RAVEN does not store the fragment key. The sender's full link is retained in tab-scoped session storage for the current tab and cleared on logout/session end; it is not persisted in local storage.
 - Existing transfers remain legacy/plaintext.
 - The server cannot retroactively encrypt old files without reading plaintext.
 - Key rotation and safe replacement/revocation are not implemented.
