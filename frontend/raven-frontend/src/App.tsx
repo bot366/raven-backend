@@ -346,6 +346,7 @@ function App() {
   };
   const logout = async () => {
     if (user) clearCachedEncryptionIdentity(user.id);
+    encryptedShareLinks.clear();
     try { await api("/auth/logout", { method: "POST", body: "{}" }); }
     finally {
       setUser(null); setPage("overview"); setSendOpen(false); setMenuOpen(false);
