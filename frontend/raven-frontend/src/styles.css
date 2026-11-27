@@ -49,3 +49,10 @@ html[data-theme="light"] .profile-summary strong,html[data-theme="light"] .trans
 html[data-theme="light"] .page-content{color:#20283a}html[data-theme="light"] .workspace-footer{color:#7e899c}
 html[data-compact="true"] .transfer-row{padding-top:9px;padding-bottom:9px}html[data-compact="true"] .activity-list{gap:2px}html[data-compact="true"] .content-card{padding-top:17px;padding-bottom:17px}
 @media(max-width:760px){.password-fields{grid-template-columns:1fr}.password-fields .primary-button{grid-column:auto}.transfer-toolbar{align-items:stretch}.transfer-toolbar select{flex:1}.link-management{width:100%;margin-left:48px}.transfer-row-link .transfer-type{margin-left:48px}}
+
+
+/* Small action groups added to dashboard and account settings */
+.section-actions,.photo-buttons,.session-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.photo-buttons{gap:12px}
+.session-actions{margin-top:4px}
+.section-actions .text-button:disabled{opacity:.55;cursor:wait}
