@@ -386,11 +386,11 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
   const identifier=typeof request.query.identifier==="string"?request.query.identifier.trim().toLowerCase().replace(/^@/,""):"";
   if(!identifier||identifier.length>254)return reply.code(400).send({error:"Enter a username or email address."});
   const found=await query<{id:string;display_name:string;username:string|null}>(
-   "SELECT id,display_name,username FROM users WHERE LOWER(email)=$1 OR LOWER(username)=$1 LIMIT 1",
+   "SELECT id,display_name,username FROM users WHERE (LOWER(email)=$1 OR LOWER(username)=$1) AND email_verified=TRUE LIMIT 1",
    [identifier]
   );
   const recipient=found.rows[0];
-  if(!recipient)return reply.code(404).send({error:"No RAVEN account was found with that username or email."});
+  if(!recipient)return reply.code(404).send({error:"No verified RAVEN account was found with that username or email."});
   if(recipient.id===user.id)return reply.code(400).send({error:"You cannot send a file to your own account."});
   return {user:{id:recipient.id,displayName:recipient.display_name,username:recipient.username}};
  });
@@ -414,7 +414,7 @@ export async function transferRoutes(app:FastifyInstance):Promise<void>{
     return reply.code(400).send({error:"Enter a valid username or email address."});
    }
    const recipient=await query<{id:string}>(
-    "SELECT id FROM users WHERE LOWER(email)=$1 OR LOWER(username)=$1 LIMIT 1",
+    "SELECT id FROM users WHERE (LOWER(email)=$1 OR LOWER(username)=$1) AND email_verified=TRUE LIMIT 1",
     [recipientIdentifier]
    );
    if(!recipient.rows[0])return reply.code(404).send({error:"No RAVEN account was found with that username or email."});
