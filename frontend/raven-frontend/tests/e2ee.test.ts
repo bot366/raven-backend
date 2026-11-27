@@ -219,17 +219,13 @@ test("RAVEN public encrypted share links use a fragment-only file key", async ()
   );
   assert.equal(new TextDecoder().decode(plaintext), originalText);
 
+  const wrongShareKey = await importShareFileKey(encodeBase64(new Uint8Array(32).fill(7)));
   await assert.rejects(
     () => decryptTransferMetadata(
-      awaitInvalidShareKey(session.shareKey),
+      wrongShareKey,
       transferId,
       session.encryptedMetadata,
       encodeBase64(session.metadataNonce),
     ),
   );
 });
-
-async function awaitInvalidShareKey(_value: string): Promise<CryptoKey> {
-  const bad = encodeBase64(new Uint8Array(32).fill(7));
-  return importShareFileKey(bad);
-}
