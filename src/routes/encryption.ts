@@ -133,7 +133,7 @@ export async function encryptionRoutes(app: FastifyInstance): Promise<void> {
         await client.query("ROLLBACK");
         return reply.code(409).send({ error: "The transfer is no longer pending. Start a new encrypted transfer." });
       }
-      for (const envelope of envelopes) {
+      for (const envelope of validatedEnvelopes) {
         await client.query(
           `INSERT INTO transfer_key_envelopes (transfer_id, user_id, key_version, enc, ciphertext)
            VALUES ($1,$2,$3,$4,$5)
