@@ -15,6 +15,9 @@ ALTER TABLE transfers ADD COLUMN IF NOT EXISTS share_token UUID;
 ALTER TABLE transfers ADD COLUMN IF NOT EXISTS sha256 TEXT;
 ALTER TABLE transfers ADD COLUMN IF NOT EXISTS chunk_size INTEGER;
 ALTER TABLE transfers ADD COLUMN IF NOT EXISTS chunk_count INTEGER;
+ALTER TABLE transfers ADD COLUMN IF NOT EXISTS encryption_version INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE transfers ADD COLUMN IF NOT EXISTS encrypted_metadata TEXT;
+ALTER TABLE transfers ADD COLUMN IF NOT EXISTS metadata_nonce TEXT;
 CREATE UNIQUE INDEX IF NOT EXISTS transfers_share_token_unique ON transfers(share_token) WHERE share_token IS NOT NULL;
 CREATE INDEX IF NOT EXISTS transfers_expires_at_idx ON transfers(expires_at);
 
@@ -52,6 +55,39 @@ CREATE INDEX IF NOT EXISTS sessions_expires_at_idx ON sessions(expires_at);
 CREATE INDEX IF NOT EXISTS transfers_user_id_created_at_idx ON transfers(user_id,created_at DESC);
 CREATE INDEX IF NOT EXISTS transfers_recipient_created_at_idx ON transfers(recipient_user_id,created_at DESC);
 CREATE INDEX IF NOT EXISTS transfer_chunks_transfer_id_idx ON transfer_chunks(transfer_id);
+
+CREATE TABLE IF NOT EXISTS user_encryption_keys (
+ user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+ key_version INTEGER NOT NULL DEFAULT 1 CHECK (key_version >= 1),
+ public_key TEXT NOT NULL,
+ encrypted_private_key TEXT NOT NULL,
+ recovery_salt TEXT NOT NULL,
+ recovery_nonce TEXT NOT NULL,
+ algorithm TEXT NOT NULL,
+ created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+ updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS transfer_key_envelopes (
+ transfer_id UUID NOT NULL REFERENCES transfers(id) ON DELETE CASCADE,
+ user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+ key_version INTEGER NOT NULL CHECK (key_version >= 1),
+ enc TEXT NOT NULL,
+ ciphertext TEXT NOT NULL,
+ created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+ PRIMARY KEY (transfer_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS transfer_key_envelopes_user_created_idx
+ ON transfer_key_envelopes(user_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS transfer_events (
+ id BIGSERIAL PRIMARY KEY,
+ transfer_id UUID NOT NULL REFERENCES transfers(id) ON DELETE CASCADE,
+ event_type TEXT NOT NULL CHECK (event_type IN ('view','download')),
+ created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS transfer_events_transfer_type_created_idx
+ ON transfer_events(transfer_id,event_type,created_at DESC);
 `;
 
 const client = await pool.connect();
