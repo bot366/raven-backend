@@ -68,6 +68,9 @@ This is out-of-band verification with local pinning, not a key-transparency serv
 
 ## 4. Backend controls
 
+- The envelope API validates the exact participant set: one envelope for a public link and two for a direct transfer. Duplicate, unknown, malformed, or wrong-version envelopes are rejected.
+- Encrypted downloads are read incrementally and decrypted one authenticated chunk at a time. The browser still assembles the verified plaintext into a download Blob, so very large files can still require substantial memory; streaming to a user-selected disk file remains a future improvement.
+
 - Versioned user public-key and encrypted-private-key-backup records.
 - Authenticated public-key lookup.
 - Transfer key envelopes restricted to sender and recipient.
@@ -108,8 +111,6 @@ These tests are important regression checks, not a full security audit or comple
 3. Key transparency or a stronger authenticated contact directory.
 4. Browser integration tests across supported browsers and devices, including shared links opened in a separate browser.
 5. Replay/authorization testing and large-file memory/performance testing.
-6. Safe key rotation/replacement and better recovery after loss of the recovery code.
-7. Key transparency or a stronger authenticated contact directory.
 8. Review frontend delivery integrity and XSS/content security controls.
 
 The implementation remains experimental. Test only with disposable, non-sensitive files until all remaining work and an independent review are complete.
